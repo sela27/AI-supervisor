@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import type { Project, QueueEngine } from "../../queue/engine.js";
+import type { Storage } from "../../storage.js";
 import { badRequest, sendError, toErrorResponse } from "../errors.js";
 import { asRecord, readSourceSelection, type Read } from "../request-body.js";
 
@@ -10,12 +11,31 @@ const PROJECT_SHAPE =
 /** Before the first run there is nothing to report but the fact that nothing is running. */
 const IDLE_QUEUE = { id: null, branch: null, state: "idle", tickets: [], error: null };
 
+export interface QueueRunDependencies {
+  engine: QueueEngine;
+  storage: Storage;
+}
+
 /**
  * Starting and watching a queue run: the Supervisor executes the whole Queue on a
- * branch of its own, and the queue's state is readable throughout.
+ * branch of its own, and the queue's state — and every Attempt's log — is readable
+ * throughout.
  */
-export function registerQueueRunRoutes(app: FastifyInstance, engine: QueueEngine): void {
+export function registerQueueRunRoutes(
+  app: FastifyInstance,
+  { engine, storage }: QueueRunDependencies,
+): void {
   app.get("/api/queue", async () => engine.current() ?? IDLE_QUEUE);
+
+  // Attempt logs outlive the working tree they were made in, so a failed ticket
+  // can still be read about after its work was reset away.
+  app.get<{ Params: { ticketId: string } }>(
+    "/api/queue/tickets/:ticketId/attempts",
+    async (request) => {
+      const run = engine.current();
+      return run ? storage.attemptsFor(run.id, request.params.ticketId) : [];
+    },
+  );
 
   app.post("/api/queue/start", async (request, reply) => {
     const source = readSourceSelection(request.body);

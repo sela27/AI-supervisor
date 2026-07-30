@@ -22,6 +22,7 @@ const TITLE_LINE = /^#\s+(.+)$/;
 const NUMBER_PREFIX = /^\d+\s*[—–-]\s*/;
 const CHECKBOX_LINE = /^-\s+\[([ xX])\]\s*(.*)$/;
 const STATUS_LINE = /^\*\*Status:\*\*/i;
+const FAILURE_HEADING = "## Supervisor failure";
 
 export function parseTicketFile(fileName: string, contents: string): ParsedTicketFile {
   const lines = contents.split(/\r?\n/);
@@ -80,6 +81,31 @@ export function withStatus(contents: string, status: string): string | undefined
 
   lines[index] = `**Status:** ${status}`;
   return lines.join("\n");
+}
+
+/**
+ * Puts the run's account of the failure at the foot of the ticket, replacing the
+ * account left by any earlier failure rather than piling another one on. Neither
+ * the heading nor the quoted summary reads as a title or a checkbox, so the file
+ * still parses back to the same ticket.
+ */
+export function withFailure(contents: string, summary: string): string {
+  const lines = contents.split(/\r?\n/);
+  const existing = lines.findIndex((line) => line.trim() === FAILURE_HEADING);
+  const kept = existing === -1 ? [...lines] : lines.slice(0, existing);
+
+  while (kept.at(-1)?.trim() === "") kept.pop();
+
+  return [...kept, "", FAILURE_HEADING, "", ...quoted(summary), ""].join("\n");
+}
+
+/**
+ * The summary is whatever the Run printed, so it goes in as a quotation: a stray
+ * `- [ ]` line of Claude's must never come back as one of the ticket's own
+ * acceptance criteria.
+ */
+function quoted(summary: string): string[] {
+  return summary.split(/\r?\n/).map((line) => (line.trim() === "" ? ">" : `> ${line}`));
 }
 
 /** Strips the `01 — ` a ticket's number puts in front of its title. */

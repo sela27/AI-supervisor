@@ -1,5 +1,19 @@
 import { DatabaseSync } from "node:sqlite";
 
+/** One Attempt as Verification left it, with everything the Run printed. */
+export interface AttemptRecord {
+  runId: string;
+  ticketId: string;
+  outcome: "succeeded" | "failed";
+  /** Why the Supervisor refused it, when it did. */
+  failure: string | null;
+  output: string;
+}
+
+export interface StoredAttempt extends AttemptRecord {
+  recordedAt: string;
+}
+
 /**
  * SQLite holds the Supervisor's own history — attempt logs, run records.
  * It is never the source of truth for whether a Ticket is done; the Ticket
@@ -8,6 +22,13 @@ import { DatabaseSync } from "node:sqlite";
 export interface Storage {
   /** Highest applied migration version, read live from the database. */
   schemaVersion(): number;
+  /**
+   * Keeps an Attempt's log somewhere the failure path cannot reach: a failed
+   * Attempt is reset out of the repository, and this is what survives it.
+   */
+  recordAttempt(attempt: AttemptRecord): void;
+  /** Every Attempt one ticket got in one run, oldest first. */
+  attemptsFor(runId: string, ticketId: string): StoredAttempt[];
   close(): void;
 }
 
@@ -18,9 +39,33 @@ interface Migration {
 
 /**
  * Append a migration here whenever the schema grows; versions apply in order and
- * only once. Empty for now — the skeleton stores nothing yet.
+ * only once.
  */
-const MIGRATIONS: readonly Migration[] = [];
+const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    up: `
+      CREATE TABLE attempts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id      TEXT NOT NULL,
+        ticket_id   TEXT NOT NULL,
+        outcome     TEXT NOT NULL,
+        failure     TEXT,
+        output      TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+      CREATE INDEX attempts_by_ticket ON attempts (run_id, ticket_id, id);
+    `,
+  },
+];
+
+interface AttemptRow {
+  ticket_id: string;
+  outcome: string;
+  failure: string | null;
+  output: string;
+  recorded_at: string;
+}
 
 export function openStorage(file: string): Storage {
   const db = new DatabaseSync(file);
@@ -35,6 +80,39 @@ export function openStorage(file: string): Storage {
 
   return {
     schemaVersion: () => readSchemaVersion(db),
+
+    recordAttempt: (attempt) => {
+      db.prepare(
+        `INSERT INTO attempts (run_id, ticket_id, outcome, failure, output, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        attempt.runId,
+        attempt.ticketId,
+        attempt.outcome,
+        attempt.failure,
+        attempt.output,
+        new Date().toISOString(),
+      );
+    },
+
+    attemptsFor: (runId, ticketId) => {
+      const rows = db
+        .prepare(
+          `SELECT ticket_id, outcome, failure, output, recorded_at
+           FROM attempts WHERE run_id = ? AND ticket_id = ? ORDER BY id`,
+        )
+        .all(runId, ticketId) as unknown as AttemptRow[];
+
+      return rows.map((row) => ({
+        runId,
+        ticketId: row.ticket_id,
+        outcome: row.outcome === "succeeded" ? "succeeded" : "failed",
+        failure: row.failure,
+        output: row.output,
+        recordedAt: row.recorded_at,
+      }));
+    },
+
     close: () => db.close(),
   };
 }

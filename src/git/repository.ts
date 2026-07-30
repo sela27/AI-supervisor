@@ -27,6 +27,12 @@ export interface GitRepository {
    * commit — or nothing at all when there was nothing left to commit.
    */
   commitEverything(message: string): Promise<string | undefined>;
+  /**
+   * Throws the branch and the working tree back to `commit`, taking commits, edits
+   * and newly created files with it. Ignored files are left alone: a failed
+   * Attempt's residue is what goes, not the project's build output.
+   */
+  resetTo(commit: string): Promise<void>;
 }
 
 export async function openRepository(directory: string): Promise<GitRepository> {
@@ -62,6 +68,12 @@ export async function openRepository(directory: string): Promise<GitRepository> 
       if (!(await isDirty())) return undefined;
       await git("commit", "-m", message);
       return headCommit();
+    },
+    resetTo: async (commit) => {
+      await git("reset", "--hard", commit);
+      // Files the Attempt created were never tracked, so the reset alone would
+      // leave them sitting in the working tree.
+      await git("clean", "-fd");
     },
   };
 }

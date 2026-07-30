@@ -40,5 +40,8 @@ The Supervisor's own judgment of whether an Attempt succeeded — project-config
 **Checkpoint**:
 The commit that ends a successful ticket. A failed ticket's changes are discarded back to the last Checkpoint.
 
+**Skipped**:
+A ticket the run never attempted because a ticket it was waiting on failed. Skipping is transitive: everything downstream of a failure is skipped too. A skipped ticket is not a failed one — nothing was tried, and nothing is written back to the Ticket Source.
+
 **Paused-on-limit**:
 The queue state entered when a usage limit is detected. The Supervisor waits until the limit resets (however long that takes) and resumes automatically; a limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget.

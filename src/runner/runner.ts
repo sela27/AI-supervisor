@@ -7,10 +7,15 @@ export interface RunRequest {
 }
 
 /**
- * What the Run reported about itself. The Supervisor never takes `succeeded` at
- * face value — Verification decides whether the Attempt actually succeeded.
+ * What the Run reported about itself, and everything it printed getting there.
+ * The Supervisor never takes `succeeded` at face value — Verification decides
+ * whether the Attempt actually succeeded. The output it keeps either way: a
+ * failed Attempt's work is thrown back to the last Checkpoint, so the log is all
+ * that is left to read afterwards.
  */
-export type RunOutcome = { status: "succeeded" } | { status: "failed"; reason: string };
+export type RunOutcome =
+  | { status: "succeeded"; output: string }
+  | { status: "failed"; reason: string; output: string };
 
 /** Executes exactly one Attempt: a single headless Claude Code Run for one ticket. */
 export interface Runner {

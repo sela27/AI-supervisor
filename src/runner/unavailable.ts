@@ -11,6 +11,7 @@ export function unavailableRunner(): Runner {
       status: "failed",
       reason:
         "No Runner is available yet — this build of the Supervisor cannot launch Claude Code",
+      output: "",
     }),
   };
 }

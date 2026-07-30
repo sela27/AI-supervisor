@@ -75,9 +75,9 @@ the run ends, so the branch is there to review.
 
 The reply carries the run's id and branch. `GET /api/queue` reports the queue's state
 (`idle`, `running`, `completed`, or `failed` when the run itself broke down) and every
-ticket's state (`pending`, `running`, `succeeded`, `failed`, or `done` when the source
-already reported it finished), so a run can be watched from the moment it starts. Tickets
-run strictly one at a time, and so do runs: starting a second while one is under way
+ticket's state (`pending`, `running`, `succeeded`, `failed`, `skipped`, or `done` when the
+source already reported it finished), so a run can be watched from the moment it starts.
+Tickets run strictly one at a time, and so do runs: starting a second while one is under way
 answers `409`.
 
 An Attempt only counts as succeeded when **every** `verify` command exits 0 **and** the
@@ -85,10 +85,38 @@ Attempt left at least one new commit — what Claude says about itself is never 
 is why at least one command is required. A verified ticket then ends in a Checkpoint commit,
 and `done` is written back to its ticket file. Ticket files kept inside the project are
 committed along with the Checkpoint; kept outside it, the Run's own last commit ends the
-ticket. A ticket that fails ends the run for now — the failure path is not built yet.
+ticket.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
+
+## When a ticket fails
+
+A failed Attempt is thrown all the way back to the last Checkpoint — its commits, its edits
+and the files it created all go, so no broken half-work reaches the next ticket. Ignored
+files (`node_modules` and friends) are left alone.
+
+The ticket's own file is then rewritten to `**Status:** failed` with a `## Supervisor
+failure` section quoting the summary, so morning triage starts from the ticket itself. That
+write-back is committed as `Failed: <title>` — the only thing a failed ticket ever adds to
+the branch, and the reason the branch is left clean enough for the next run to start.
+
+Every ticket that was waiting on the failure — directly or through another ticket — is
+marked `skipped` and never attempted, with the blocker named in its `failure` field. Nothing
+is written back for a skipped ticket: it was never tried. Everything that was not waiting on
+the failure keeps running, so one bad ticket never ends the night; the run still finishes as
+`completed`, with the mixed statuses reported per ticket.
+
+Because the reset destroys the working tree the Attempt ran in, the Attempt's log is kept in
+the Supervisor's own SQLite database instead:
+
+```bash
+curl localhost:4317/api/queue/tickets/01-boot-the-app/attempts
+```
+
+That answers every Attempt the current run made on the ticket, oldest first, each with its
+outcome, its failure summary, and the full output — the Run's own, plus whatever the
+verification command printed when it was a `verify` command that refused the Attempt.
 
 ## Checks
 

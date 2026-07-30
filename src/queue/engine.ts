@@ -1,6 +1,11 @@
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
-import type { Runner } from "../runner/runner.js";
-import { discoverLocalTickets, markLocalTicketDone } from "../tickets/local-source.js";
+import type { RunOutcome, Runner } from "../runner/runner.js";
+import type { Storage } from "../storage.js";
+import {
+  discoverLocalTickets,
+  markLocalTicketDone,
+  markLocalTicketFailed,
+} from "../tickets/local-source.js";
 import type { Ticket } from "../tickets/ticket.js";
 import { verify } from "../verification/verifier.js";
 import { QueueRunInProgressError } from "./errors.js";
@@ -11,9 +16,16 @@ export type QueueRunState = "running" | "completed" | "failed";
 
 /**
  * `done` — the Ticket Source already reported it finished, so it is never run.
- * The rest is this run's own doing.
+ * `skipped` — a ticket it was waiting on failed, so it never will be. The rest is
+ * this run's own doing.
  */
-export type TicketRunState = "done" | "pending" | "running" | "succeeded" | "failed";
+export type TicketRunState =
+  | "done"
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped";
 
 export interface TicketRun {
   id: string;
@@ -21,6 +33,7 @@ export interface TicketRun {
   state: TicketRunState;
   /** The Checkpoint commit that ended this ticket, once it has one. */
   checkpoint: string | null;
+  /** Why it did not succeed: the Attempt's failure, or the blocker that stopped it. */
   failure: string | null;
 }
 
@@ -60,12 +73,26 @@ interface Queued {
 }
 
 interface RunContext extends QueueRunRequest {
+  run: QueueRun;
   repository: GitRepository;
   runner: Runner;
+  storage: Storage;
   queued: Queued[];
+  /**
+   * Where a failed Attempt is thrown back to: this run's last Checkpoint, or the
+   * commit recording the last failure, whichever came later. Never an Attempt's
+   * own work — that is exactly what the reset is for.
+   */
+  restorePoint: string;
 }
 
-export function createQueueEngine(dependencies: { runner: Runner }): QueueEngine {
+export interface QueueEngineDependencies {
+  runner: Runner;
+  /** Where Attempt logs are kept — out of the repository the failure path resets. */
+  storage: Storage;
+}
+
+export function createQueueEngine(dependencies: QueueEngineDependencies): QueueEngine {
   let run: QueueRun | undefined;
   // Starting takes several awaits; this closes the window in which a second
   // start could slip past the check and put two runs on the same repository.
@@ -107,11 +134,14 @@ export function createQueueEngine(dependencies: { runner: Runner }): QueueEngine
     };
     run = started;
 
-    void execute(started, {
+    void execute({
       ...request,
+      run: started,
       repository,
       runner: dependencies.runner,
+      storage: dependencies.storage,
       queued,
+      restorePoint: await repository.headCommit(),
     });
 
     return snapshot(started);
@@ -139,22 +169,22 @@ export function createQueueEngine(dependencies: { runner: Runner }): QueueEngine
 
 /**
  * Walks the Frontier one ticket at a time until nothing is left to run. A failed
- * ticket ends the run for now; deciding which dependents to skip and what to carry
- * on with is the failure path's job.
+ * ticket takes its dependents out of the queue with it, and the run carries on
+ * with whatever was never waiting on it.
  */
-async function execute(run: QueueRun, context: RunContext): Promise<void> {
+async function execute(context: RunContext): Promise<void> {
   try {
     for (;;) {
-      const next = nextOnFrontier(run, context.queued);
+      const next = nextOnFrontier(context.queued);
       if (!next) break;
-      if ((await attempt(next, context)) === "failed") break;
+      await attempt(next, context);
     }
-    run.state = "completed";
+    context.run.state = "completed";
   } catch (error) {
     // The run itself broke down — the repository moved under it, the source went
     // away. Whatever the tickets say, this queue did not complete.
-    run.error = error instanceof Error ? error.message : String(error);
-    run.state = "failed";
+    context.run.error = error instanceof Error ? error.message : String(error);
+    context.run.state = "failed";
   }
 }
 
@@ -162,7 +192,7 @@ async function execute(run: QueueRun, context: RunContext): Promise<void> {
  * One Attempt: a single Run of the ticket, then the Supervisor's own Verification
  * of what it left behind. Claude's own report is never enough on its own.
  */
-async function attempt(queued: Queued, context: RunContext): Promise<TicketRunState> {
+async function attempt(queued: Queued, context: RunContext): Promise<void> {
   const { entry, ticket } = queued;
   entry.state = "running";
 
@@ -171,14 +201,22 @@ async function attempt(queued: Queued, context: RunContext): Promise<TicketRunSt
     ticket,
     projectDirectory: context.project.directory,
   });
-  if (outcome.status === "failed") return fail(entry, outcome.reason);
 
-  if ((await context.repository.headCommit()) === before) {
-    return fail(entry, "the attempt finished without making a commit");
+  const refusal = await verificationRefusal(outcome, before, context);
+  // The log is written down before anything else, because the reset that follows
+  // a failure is the last chance to have it.
+  context.storage.recordAttempt({
+    runId: context.run.id,
+    ticketId: ticket.id,
+    outcome: refusal === undefined ? "succeeded" : "failed",
+    failure: refusal?.reason ?? null,
+    output: joined(outcome.output, refusal?.output),
+  });
+
+  if (refusal !== undefined) {
+    await failTicket(queued, refusal.reason, context);
+    return;
   }
-
-  const verification = await verify(context.project.verify, context.project.directory);
-  if (!verification.ok) return fail(entry, verification.failure);
 
   await markLocalTicketDone(context.sourceDirectory, ticket.id);
   // The write-back, and anything the Run left uncommitted, ride along in the
@@ -186,19 +224,90 @@ async function attempt(queued: Queued, context: RunContext): Promise<TicketRunSt
   // own last commit is what ends the ticket.
   const swept = await context.repository.commitEverything(`Checkpoint: ${ticket.title}`);
   entry.checkpoint = swept ?? (await context.repository.headCommit());
+  context.restorePoint = entry.checkpoint;
   entry.state = "succeeded";
-  return "succeeded";
 }
 
-function fail(entry: TicketRun, reason: string): TicketRunState {
-  entry.state = "failed";
-  entry.failure = reason;
-  return "failed";
+/** Why Verification refused an Attempt, and what the refusing check printed. */
+interface Refusal {
+  reason: string;
+  output: string;
+}
+
+/**
+ * Verification: the Supervisor's own reading of what the Attempt left behind, owing
+ * nothing to what the Run said about itself. Nothing back means the Attempt stands.
+ */
+async function verificationRefusal(
+  outcome: RunOutcome,
+  before: string,
+  context: RunContext,
+): Promise<Refusal | undefined> {
+  if (outcome.status === "failed") return { reason: outcome.reason, output: "" };
+
+  if ((await context.repository.headCommit()) === before) {
+    return { reason: "the attempt finished without making a commit", output: "" };
+  }
+
+  const verification = await verify(context.project.verify, context.project.directory);
+  if (verification.ok) return undefined;
+  return { reason: verification.failure, output: verification.output };
+}
+
+/**
+ * Gives up on a ticket: the Attempt's half-work goes back to the restore point, the
+ * failure is written back to the ticket, and everything that was waiting on this
+ * ticket is taken out of the queue.
+ */
+async function failTicket(queued: Queued, reason: string, context: RunContext): Promise<void> {
+  queued.entry.state = "failed";
+  queued.entry.failure = reason;
+
+  await context.repository.resetTo(context.restorePoint);
+  await markLocalTicketFailed(context.sourceDirectory, queued.ticket.id, reason);
+  // Committing the write-back is what ends the ticket cleanly: the branch is left
+  // with nothing uncommitted, so the next ticket's Checkpoint stays its own work
+  // and the next reset cannot rewind this record away. Ticket files kept outside
+  // the repository leave nothing to commit, and the restore point simply stands.
+  const recorded = await context.repository.commitEverything(`Failed: ${queued.ticket.title}`);
+  context.restorePoint = recorded ?? context.restorePoint;
+
+  skipDependents(context);
+}
+
+/** Everything worth keeping about an Attempt, in the order it happened. */
+function joined(...parts: (string | undefined)[]): string {
+  return parts.filter((part): part is string => part !== undefined && part !== "").join("\n");
+}
+
+/**
+ * Marks everything a failure has doomed. One pass suffices: the queue is in
+ * dependency order, so a ticket is only reached after every blocker it names.
+ */
+function skipDependents(context: RunContext): void {
+  const stopped = new Set(
+    context.queued
+      .filter(({ entry }) => entry.state === "failed" || entry.state === "skipped")
+      .map(({ entry }) => entry.id),
+  );
+
+  for (const { entry, ticket } of context.queued) {
+    if (entry.state !== "pending") continue;
+
+    const blocker = ticket.blockedBy.find((id) => stopped.has(id));
+    if (blocker === undefined) continue;
+
+    entry.state = "skipped";
+    entry.failure = `${blocker} did not succeed, so this ticket was never attempted`;
+    stopped.add(entry.id);
+  }
 }
 
 /** The first ticket still waiting whose blockers have all finished. */
-function nextOnFrontier(run: QueueRun, queued: Queued[]): Queued | undefined {
-  const finished = new Set(run.tickets.filter(hasFinished).map((entry) => entry.id));
+function nextOnFrontier(queued: Queued[]): Queued | undefined {
+  const finished = new Set(
+    queued.filter(({ entry }) => hasFinished(entry)).map(({ entry }) => entry.id),
+  );
 
   return queued.find(
     (item) =>

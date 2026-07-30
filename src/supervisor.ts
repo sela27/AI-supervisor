@@ -34,7 +34,10 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   mkdirSync(dataDir, { recursive: true });
 
   const storage = openStorage(join(dataDir, DATABASE_FILENAME));
-  const engine = createQueueEngine({ runner: options.runner ?? unavailableRunner() });
+  const engine = createQueueEngine({
+    runner: options.runner ?? unavailableRunner(),
+    storage,
+  });
   const app = buildApp({ storage, engine, logger: options.logger });
 
   try {

@@ -2,7 +2,16 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { createTestProject, type TestProject } from "./helpers/project.js";
+import { createTestProject } from "./helpers/project.js";
+import {
+  createGate,
+  readQueue,
+  requestStart,
+  startRun,
+  stateOf,
+  ticketOf,
+  waitForQueue,
+} from "./helpers/queue.js";
 import { commitsWork, fakeRunner } from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
 import { removeTempDirectories } from "./helpers/temp-dir.js";
@@ -125,8 +134,8 @@ test("an attempt whose verification command fails does not succeed", async () =>
   expect(ticket?.state).toBe("failed");
   expect(ticket?.checkpoint).toBeNull();
   expect(ticket?.failure).toContain("exit 3");
-  // Nothing is written back for a ticket the Supervisor could not verify.
-  expect(await project.read("tickets/01-boot-the-app.md")).toContain("**Status:** ready-for-agent");
+  // `done` is never written back for a ticket the Supervisor could not verify.
+  expect(await project.read("tickets/01-boot-the-app.md")).toContain("**Status:** failed");
 });
 
 test("an attempt that produced no commit does not succeed", async () => {
@@ -213,90 +222,3 @@ test("the queue is idle until a run is started, and refuses a second run while o
   await waitForQueue(supervisor, (queue) => queue.state === "completed");
 });
 
-interface QueueBody {
-  id: string | null;
-  branch: string | null;
-  state: string;
-  tickets: {
-    id: string;
-    title: string;
-    state: string;
-    checkpoint: string | null;
-    failure: string | null;
-  }[];
-}
-
-interface StartOptions {
-  /** Where the tickets live; inside the project unless a test says otherwise. */
-  source?: string;
-  verify?: string[];
-}
-
-function requestStart(
-  running: TestSupervisor,
-  project: TestProject,
-  options: StartOptions = {},
-): Promise<Response> {
-  return running.request("/api/queue/start", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      source: { type: "local", directory: options.source ?? project.ticketsDirectory },
-      project: { directory: project.directory, verify: options.verify ?? ["exit 0"] },
-    }),
-  });
-}
-
-async function startRun(
-  running: TestSupervisor,
-  project: TestProject,
-  options?: StartOptions,
-): Promise<QueueBody> {
-  const response = await requestStart(running, project, options);
-  expect(response.status).toBe(202);
-  return (await response.json()) as QueueBody;
-}
-
-async function readQueue(running: TestSupervisor): Promise<QueueBody> {
-  const response = await running.request("/api/queue");
-  expect(response.status).toBe(200);
-  return (await response.json()) as QueueBody;
-}
-
-/** Polls the API — the only way a test watches a run — until the queue looks right. */
-async function waitForQueue(
-  running: TestSupervisor,
-  matches: (queue: QueueBody) => boolean,
-): Promise<QueueBody> {
-  const deadline = Date.now() + 15_000;
-  for (;;) {
-    const queue = await readQueue(running);
-    if (matches(queue)) return queue;
-    if (Date.now() > deadline) {
-      throw new Error(`The queue never got there; it last looked like ${JSON.stringify(queue)}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-function ticketOf(queue: QueueBody, id: string): QueueBody["tickets"][number] | undefined {
-  return queue.tickets.find((ticket) => ticket.id === id);
-}
-
-function stateOf(queue: QueueBody, id: string): string | undefined {
-  return ticketOf(queue, id)?.state;
-}
-
-interface Gate {
-  opened: Promise<void>;
-  open(): void;
-}
-
-/** Holds a Runner mid-Attempt so a test can look at the queue while it is running. */
-function createGate(): Gate {
-  let open = (): void => {};
-  const opened = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { opened, open: () => open() };
-}

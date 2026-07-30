@@ -17,7 +17,7 @@ export type FakeRunnerBehaviour = (
   request: RunRequest,
 ) => Promise<RunOutcome | void> | RunOutcome | void;
 
-/** Behaviour that returns nothing counts as a successful Attempt. */
+/** Behaviour that returns nothing counts as a successful Attempt with no output. */
 export function fakeRunner(behaviour: FakeRunnerBehaviour = () => {}): FakeRunner {
   let inFlight = 0;
 
@@ -31,7 +31,7 @@ export function fakeRunner(behaviour: FakeRunnerBehaviour = () => {}): FakeRunne
       runner.order.push(request.ticket.id);
       runner.requests.push(request);
       try {
-        return (await behaviour(request)) ?? { status: "succeeded" };
+        return (await behaviour(request)) ?? { status: "succeeded", output: "" };
       } finally {
         inFlight -= 1;
       }

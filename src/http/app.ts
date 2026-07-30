@@ -20,7 +20,7 @@ export function buildApp({ storage, engine, logger = false }: AppDependencies): 
   }));
 
   registerQueuePreviewRoute(app);
-  registerQueueRunRoutes(app, engine);
+  registerQueueRunRoutes(app, { engine, storage });
 
   return app;
 }

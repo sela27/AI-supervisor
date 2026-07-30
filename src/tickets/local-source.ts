@@ -5,6 +5,7 @@ import { TicketSourceError, type TicketProblem } from "./errors.js";
 import {
   parseTicketFile,
   stripTicketNumberPrefix,
+  withFailure,
   withStatus,
   type ParsedTicket,
 } from "./ticket-file.js";
@@ -46,10 +47,34 @@ export async function discoverLocalTickets(directory: string): Promise<Ticket[]>
  * so a restarted Supervisor still agrees about what is done.
  */
 export async function markLocalTicketDone(directory: string, ticketId: string): Promise<void> {
+  await rewriteTicketFile(directory, ticketId, (contents) => withStatus(contents, "done"));
+}
+
+/**
+ * Records a ticket the Supervisor could not get past, with the summary of what
+ * went wrong, so the morning's triage starts from the ticket itself. Writing it
+ * again over an earlier failure replaces that account rather than adding to it.
+ */
+export async function markLocalTicketFailed(
+  directory: string,
+  ticketId: string,
+  summary: string,
+): Promise<void> {
+  await rewriteTicketFile(directory, ticketId, (contents) => {
+    const updated = withStatus(contents, "failed");
+    return updated === undefined ? undefined : withFailure(updated, summary);
+  });
+}
+
+async function rewriteTicketFile(
+  directory: string,
+  ticketId: string,
+  rewrite: (contents: string) => string | undefined,
+): Promise<void> {
   const file = join(resolve(directory), `${ticketId}.md`);
-  const updated = withStatus(await readFile(file, "utf8"), "done");
+  const updated = rewrite(await readFile(file, "utf8"));
   if (updated === undefined) {
-    throw new TicketSourceError(`${file} has no "**Status:**" line to record done in`);
+    throw new TicketSourceError(`${file} has no "**Status:**" line to record the outcome in`);
   }
   await writeFile(file, updated, "utf8");
 }
