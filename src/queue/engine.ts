@@ -1,7 +1,7 @@
 import { messageOf } from "../errors.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
-import type { Storage } from "../storage.js";
+import type { AttemptRecord, Storage } from "../storage.js";
 import {
   discoverLocalTickets,
   markLocalTicketDone,
@@ -40,6 +40,12 @@ export interface TicketRun {
   checkpoint: string | null;
   /** Why it did not succeed: the Attempt's failure, or the blocker that stopped it. */
   failure: string | null;
+  /**
+   * How many Attempts the run has recorded for this ticket, the ones a usage limit
+   * cut short included. A ticket stays `running` across its every retry, so this is
+   * the only thing that says a watcher has a new Attempt to read.
+   */
+  attempts: number;
 }
 
 export interface QueueRun {
@@ -154,6 +160,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
         state: ticket.state === "done" ? "done" : "pending",
         checkpoint: null,
         failure: null,
+        attempts: 0,
       },
     }));
 
@@ -294,9 +301,7 @@ async function attempt(
   const refusal = await verificationRefusal(outcome, before, context);
   // The log is written down before anything else, because the reset that follows
   // a failure is the last chance to have it.
-  context.storage.recordAttempt({
-    runId: context.run.id,
-    ticketId: ticket.id,
+  record(queued, context, {
     outcome: refusal === undefined ? "succeeded" : "failed",
     failure: refusal?.reason ?? null,
     output: joined(outcome.output, refusal?.output),
@@ -362,16 +367,28 @@ async function discardOnLimit(
   outcome: Extract<RunOutcome, { status: "limit-hit" }>,
   context: RunContext,
 ): Promise<void> {
-  context.storage.recordAttempt({
-    runId: context.run.id,
-    ticketId: queued.ticket.id,
-    outcome: "limit-hit",
-    failure: null,
-    output: outcome.output,
-  });
+  record(queued, context, { outcome: "limit-hit", failure: null, output: outcome.output });
 
   await context.repository.resetTo(context.restorePoint);
   queued.entry.state = "pending";
+}
+
+/**
+ * Files an Attempt: the log goes where the failure path cannot reach it, and the
+ * ticket's own count goes up. One place, so what the run says about a ticket and
+ * what is filed under it can never disagree.
+ */
+function record(
+  queued: Queued,
+  context: RunContext,
+  attempt: Omit<AttemptRecord, "runId" | "ticketId">,
+): void {
+  context.storage.recordAttempt({
+    ...attempt,
+    runId: context.run.id,
+    ticketId: queued.ticket.id,
+  });
+  queued.entry.attempts += 1;
 }
 
 /**

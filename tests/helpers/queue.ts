@@ -18,7 +18,15 @@ export interface QueueBody {
     state: string;
     checkpoint: string | null;
     failure: string | null;
+    /** How many Attempts the run has recorded for this ticket so far. */
+    attempts: number;
   }[];
+}
+
+/** What the Attempt in flight has printed, as both the API and the stream report it. */
+export interface LiveOutputBody {
+  ticketId: string | null;
+  output: string;
 }
 
 /** One Attempt as the API reports it, log and all. */
@@ -102,7 +110,7 @@ export async function readLiveOutput(
     `/api/queue/tickets/${encodeURIComponent(ticketId)}/output`,
   );
   expect(response.status).toBe(200);
-  return ((await response.json()) as { output: string }).output;
+  return ((await response.json()) as LiveOutputBody).output;
 }
 
 /** Polls the API — the only way a test watches a run — until the queue looks right. */

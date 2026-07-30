@@ -34,6 +34,10 @@ What carries out a Run — the one place the Supervisor launches Claude Code fro
 **Attempt**:
 One Run of a ticket. A ticket gets a bounded number of attempts — its **attempt budget**, two by default — and each attempt after the first receives the previous attempt's failure feedback. A budget belongs to a ticket, not to a run: spending one ticket's whole budget costs the next ticket nothing.
 
+**Dashboard**:
+The Supervisor's own web page — the read-only view of a run, served by the Supervisor itself. It shows what is happening and what happened; it never starts, stops or changes anything.
+_Avoid_: UI, front-end, web app
+
 **Verification**:
 The Supervisor's own judgment of whether an Attempt succeeded — project-configured commands (tests, typecheck, build) run after the Attempt, independent of what Claude reported. An optional review agent can be enabled on top.
 

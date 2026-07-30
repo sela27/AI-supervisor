@@ -19,7 +19,8 @@ npm install
 npm run dev
 ```
 
-The service listens on `http://localhost:4317` by default and answers `GET /api/health`.
+The service listens on `http://localhost:4317` by default. Open that address for the
+dashboard; `GET /api/health` answers on the same port.
 
 ## Configuring an instance
 
@@ -151,6 +152,29 @@ ticket.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
+
+## The dashboard
+
+The Supervisor serves its own dashboard at `/`, on the same port as the API — one address
+to open, from the phone by the bed as readily as from a desk:
+
+```bash
+open http://localhost:4317
+```
+
+It shows the queue's state and its branch, every ticket's state, the output of the Attempt
+in flight as it is printed, and — on any ticket you open — that ticket's Attempts, each with
+its outcome, its failure summary and its whole log. It is read-only: a run is started
+through the API, and nothing on the page changes anything.
+
+Everything but the per-ticket history is pushed to the page over one server-sent-event
+stream at `/api/events`, so nothing is ever refreshed and a page opened halfway through the
+night is right from its first paint. The stream carries a `queue` event and an `output`
+event, each sent when — and only when — it has something new to say. A connection that
+drops is reopened by the browser itself, and the page says so while it is gone.
+
+The page is one self-contained document — markup, styles and script together, nothing
+fetched from anywhere else — so it renders on a network with no way out.
 
 ## Following a run from elsewhere
 

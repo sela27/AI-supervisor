@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastif
 import type { QueueRunDefaults } from "../config.js";
 import type { QueueEngine } from "../queue/engine.js";
 import type { Storage } from "../storage.js";
+import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerQueuePreviewRoute } from "./routes/queue-preview.js";
 import { registerQueueRunRoutes } from "./routes/queue-run.js";
 
@@ -27,6 +28,7 @@ export function buildApp({
     schemaVersion: storage.schemaVersion(),
   }));
 
+  registerDashboardRoutes(app, engine);
   registerQueuePreviewRoute(app, defaults);
   registerQueueRunRoutes(app, { engine, storage, defaults });
 

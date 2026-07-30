@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { QueueRunDefaults } from "../../config.js";
 import { asRecord } from "../../json.js";
 import type { Project, QueueEngine } from "../../queue/engine.js";
+import { currentQueue, type LiveOutputView } from "../../queue/view.js";
 import type { Storage } from "../../storage.js";
 import { isVerification } from "../../verification/verifier.js";
 import { badRequest, sendError, toErrorResponse } from "../errors.js";
@@ -10,16 +11,6 @@ import { notSupplied, readSourceSelection, type Read } from "../request-body.js"
 
 const PROJECT_SHAPE =
   'A project looks like { "project": { "directory": "/path/to/repo", "verify": ["npm test"] } }';
-
-/** Before the first run there is nothing to report but the fact that nothing is running. */
-const IDLE_QUEUE = {
-  id: null,
-  branch: null,
-  state: "idle",
-  tickets: [],
-  error: null,
-  pushFailure: null,
-};
 
 export interface QueueRunDependencies {
   engine: QueueEngine;
@@ -37,7 +28,7 @@ export function registerQueueRunRoutes(
   app: FastifyInstance,
   { engine, storage, defaults }: QueueRunDependencies,
 ): void {
-  app.get("/api/queue", async () => engine.current() ?? IDLE_QUEUE);
+  app.get("/api/queue", async () => currentQueue(engine));
 
   // Attempt logs outlive the working tree they were made in, so a failed ticket
   // can still be read about after its work was reset away.
@@ -53,7 +44,7 @@ export function registerQueueRunRoutes(
   // Attempt has ended, and by then the Run may have been going for an hour.
   app.get<{ Params: { ticketId: string } }>(
     "/api/queue/tickets/:ticketId/output",
-    async (request) => ({
+    async (request): Promise<LiveOutputView> => ({
       ticketId: request.params.ticketId,
       output: engine.liveOutput(request.params.ticketId),
     }),
