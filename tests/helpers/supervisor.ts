@@ -1,3 +1,4 @@
+import type { Runner } from "../../src/runner/runner.js";
 import { startSupervisor } from "../../src/supervisor.js";
 import { createTempDirectory } from "./temp-dir.js";
 
@@ -17,6 +18,8 @@ export interface TestSupervisor {
 export interface TestSupervisorOptions {
   /** Reuse an existing data directory, e.g. to restart onto the same storage. */
   dataDir?: string;
+  /** The Runner seam; tests substitute a fake so no real Claude Code is launched. */
+  runner?: Runner;
 }
 
 export async function startTestSupervisor(
@@ -24,7 +27,12 @@ export async function startTestSupervisor(
 ): Promise<TestSupervisor> {
   const dataDir = options.dataDir ?? (await createTempDirectory("supervisor-test-"));
 
-  const supervisor = await startSupervisor({ dataDir, port: 0, host: "127.0.0.1" });
+  const supervisor = await startSupervisor({
+    dataDir,
+    port: 0,
+    host: "127.0.0.1",
+    runner: options.runner,
+  });
 
   return {
     url: supervisor.url,

@@ -6,7 +6,7 @@ An orchestration service that executes a queue of tickets unattended, driving Cl
 
 **Supervisor**:
 The orchestration service itself — the thing that picks tickets, launches runs, and handles limits.
-_Avoid_: script, runner, manager
+_Avoid_: script, runner (the Runner is a different thing), manager
 
 **Ticket**:
 A tracer-bullet vertical slice of work with acceptance criteria and blocking edges, produced by `/to-tickets`.
@@ -27,6 +27,9 @@ A ticket the Ticket Source reports as finished. A done ticket is never run, and 
 **Run**:
 A single headless Claude Code invocation that executes exactly one ticket, starting from a fresh context.
 _Avoid_: session, job
+
+**Runner**:
+What carries out a Run — the one place the Supervisor launches Claude Code from. Tests substitute a fake, so a test suite never launches a Run of its own.
 
 **Attempt**:
 One Run of a ticket. A ticket gets a bounded number of attempts (default 2); each attempt after the first receives the previous attempt's failure feedback.

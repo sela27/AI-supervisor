@@ -1,8 +1,13 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { TicketSourceError, type TicketProblem } from "./errors.js";
-import { parseTicketFile, stripTicketNumberPrefix, type ParsedTicket } from "./ticket-file.js";
+import {
+  parseTicketFile,
+  stripTicketNumberPrefix,
+  withStatus,
+  type ParsedTicket,
+} from "./ticket-file.js";
 import type { Ticket } from "./ticket.js";
 
 /**
@@ -34,6 +39,19 @@ export async function discoverLocalTickets(directory: string): Promise<Ticket[]>
   if (problems.length > 0) throw unreadableSource(path, problems);
 
   return tickets;
+}
+
+/**
+ * Records a finished ticket where done-ness belongs — in the Ticket Source itself,
+ * so a restarted Supervisor still agrees about what is done.
+ */
+export async function markLocalTicketDone(directory: string, ticketId: string): Promise<void> {
+  const file = join(resolve(directory), `${ticketId}.md`);
+  const updated = withStatus(await readFile(file, "utf8"), "done");
+  if (updated === undefined) {
+    throw new TicketSourceError(`${file} has no "**Status:**" line to record done in`);
+  }
+  await writeFile(file, updated, "utf8");
 }
 
 function unreadableSource(path: string, problems: TicketProblem[]): TicketSourceError {

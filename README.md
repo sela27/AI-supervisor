@@ -59,6 +59,37 @@ ticket, and several may be listed comma-separated or as bullets under the field.
 `**Status:** done` marks a ticket finished — it is never runnable, and it no longer blocks
 its dependents.
 
+## Running a queue
+
+Starting a run executes the whole Queue unattended — one ticket at a time, in dependency
+order, each on a branch the Supervisor creates for the run:
+
+```bash
+curl -X POST localhost:4317/api/queue/start -H 'content-type: application/json' -d '{"source":{"type":"local","directory":"./.scratch/my-feature/issues"},"project":{"directory":"/path/to/project","verify":["npm run typecheck","npm test"]}}'
+```
+
+The project must be a git repository with nothing uncommitted — a run commits everything it
+finds, so work left lying about would land in a Checkpoint as if Claude had written it. The
+Supervisor creates the run's branch with `git checkout -b` and leaves the project on it when
+the run ends, so the branch is there to review.
+
+The reply carries the run's id and branch. `GET /api/queue` reports the queue's state
+(`idle`, `running`, `completed`, or `failed` when the run itself broke down) and every
+ticket's state (`pending`, `running`, `succeeded`, `failed`, or `done` when the source
+already reported it finished), so a run can be watched from the moment it starts. Tickets
+run strictly one at a time, and so do runs: starting a second while one is under way
+answers `409`.
+
+An Attempt only counts as succeeded when **every** `verify` command exits 0 **and** the
+Attempt left at least one new commit — what Claude says about itself is never enough, which
+is why at least one command is required. A verified ticket then ends in a Checkpoint commit,
+and `done` is written back to its ticket file. Ticket files kept inside the project are
+committed along with the Checkpoint; kept outside it, the Run's own last commit ends the
+ticket. A ticket that fails ends the run for now — the failure path is not built yet.
+
+The `verify` commands run in the project directory through a shell, so `npm test` and
+`bash -c '...'` both work.
+
 ## Checks
 
 ```bash

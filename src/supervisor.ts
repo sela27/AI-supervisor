@@ -4,6 +4,9 @@ import { join, resolve } from "node:path";
 import type { FastifyServerOptions } from "fastify";
 
 import { buildApp } from "./http/app.js";
+import { createQueueEngine } from "./queue/engine.js";
+import type { Runner } from "./runner/runner.js";
+import { unavailableRunner } from "./runner/unavailable.js";
 import { openStorage } from "./storage.js";
 
 export interface SupervisorOptions {
@@ -14,6 +17,8 @@ export interface SupervisorOptions {
   host: string;
   /** Off by default so tests stay quiet; the real entrypoint turns it on. */
   logger?: FastifyServerOptions["logger"];
+  /** Executes one Attempt. Tests substitute a fake so no Claude Code is launched. */
+  runner?: Runner;
 }
 
 export interface RunningSupervisor {
@@ -29,7 +34,8 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   mkdirSync(dataDir, { recursive: true });
 
   const storage = openStorage(join(dataDir, DATABASE_FILENAME));
-  const app = buildApp({ storage, logger: options.logger });
+  const engine = createQueueEngine({ runner: options.runner ?? unavailableRunner() });
+  const app = buildApp({ storage, engine, logger: options.logger });
 
   try {
     await app.listen({ port: options.port, host: options.host });

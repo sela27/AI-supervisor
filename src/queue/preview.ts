@@ -46,23 +46,27 @@ function blockersAllIn(ticket: Ticket, ids: ReadonlySet<string>): boolean {
   return ticket.blockedBy.every((id) => ids.has(id));
 }
 
+/**
+ * Takes the earliest ticket whose blockers are already placed, over and over.
+ * Where the blocking edges leave a choice the Ticket Source's own order decides,
+ * so a queue runs in the order the tickets were written.
+ */
 function orderByBlockingEdges(tickets: Ticket[]): Ticket[] {
   const remaining = [...tickets];
   const ordered: Ticket[] = [];
   const placed = new Set<string>();
 
   while (remaining.length > 0) {
-    const ready = remaining.filter((ticket) => blockersAllIn(ticket, placed));
-    if (ready.length === 0) {
-      const ids = remaining.map((ticket) => ticket.id).join(", ");
+    const ticket = remaining.find((candidate) => blockersAllIn(candidate, placed));
+    // Nothing is placeable while tickets remain: what is left is a cycle.
+    if (!ticket) {
+      const ids = remaining.map((blocked) => blocked.id).join(", ");
       throw new TicketSourceError(`These tickets block each other, so no order exists: ${ids}`);
     }
 
-    for (const ticket of ready) {
-      ordered.push(ticket);
-      placed.add(ticket.id);
-      remaining.splice(remaining.indexOf(ticket), 1);
-    }
+    remaining.splice(remaining.indexOf(ticket), 1);
+    ordered.push(ticket);
+    placed.add(ticket.id);
   }
 
   return ordered;

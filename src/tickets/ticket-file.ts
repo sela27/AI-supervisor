@@ -21,6 +21,7 @@ export type ParsedTicketFile =
 const TITLE_LINE = /^#\s+(.+)$/;
 const NUMBER_PREFIX = /^\d+\s*[—–-]\s*/;
 const CHECKBOX_LINE = /^-\s+\[([ xX])\]\s*(.*)$/;
+const STATUS_LINE = /^\*\*Status:\*\*/i;
 
 export function parseTicketFile(fileName: string, contents: string): ParsedTicketFile {
   const lines = contents.split(/\r?\n/);
@@ -66,6 +67,19 @@ export function parseTicketFile(fileName: string, contents: string): ParsedTicke
       ),
     },
   };
+}
+
+/**
+ * Rewrites the file's `**Status:**` line, leaving every other line exactly as the
+ * user wrote it. Nothing comes back when the file has no such line to write into.
+ */
+export function withStatus(contents: string, status: string): string | undefined {
+  const lines = contents.split(/\r?\n/);
+  const index = lines.findIndex((line) => STATUS_LINE.test(line.trim()));
+  if (index === -1) return undefined;
+
+  lines[index] = `**Status:** ${status}`;
+  return lines.join("\n");
 }
 
 /** Strips the `01 — ` a ticket's number puts in front of its title. */
