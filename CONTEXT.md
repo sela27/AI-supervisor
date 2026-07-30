@@ -21,6 +21,9 @@ The ordered list of tickets the Supervisor will execute, discovered automaticall
 **Frontier**:
 The set of tickets whose blockers are all done — the only tickets eligible to run next. A ticket with an open blocker is never run.
 
+**Done**:
+A ticket the Ticket Source reports as finished. A done ticket is never run, and it no longer blocks the tickets that depend on it. Done-ness always lives in the Ticket Source, never in the Supervisor's own history.
+
 **Run**:
 A single headless Claude Code invocation that executes exactly one ticket, starting from a fresh context.
 _Avoid_: session, job

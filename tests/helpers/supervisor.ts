@@ -1,8 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { startSupervisor } from "../../src/supervisor.js";
+import { createTempDirectory } from "./temp-dir.js";
 
 /**
  * A Supervisor booted for a single test: the real service, real SQLite, a real
@@ -22,13 +19,10 @@ export interface TestSupervisorOptions {
   dataDir?: string;
 }
 
-const createdDataDirs = new Set<string>();
-
 export async function startTestSupervisor(
   options: TestSupervisorOptions = {},
 ): Promise<TestSupervisor> {
-  const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "supervisor-test-")));
-  createdDataDirs.add(dataDir);
+  const dataDir = options.dataDir ?? (await createTempDirectory("supervisor-test-"));
 
   const supervisor = await startSupervisor({ dataDir, port: 0, host: "127.0.0.1" });
 
@@ -38,12 +32,4 @@ export async function startTestSupervisor(
     request: (path, init) => fetch(new URL(path, supervisor.url), init),
     stop: () => supervisor.stop(),
   };
-}
-
-/** Removes every data directory this helper created. Call from a test teardown. */
-export async function removeTestDataDirs(): Promise<void> {
-  for (const dir of createdDataDirs) {
-    await rm(dir, { recursive: true, force: true });
-  }
-  createdDataDirs.clear();
 }

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
 import type { Storage } from "../storage.js";
+import { registerQueuePreviewRoute } from "./routes/queue-preview.js";
 
 export interface AppDependencies {
   storage: Storage;
@@ -14,6 +15,8 @@ export function buildApp({ storage, logger = false }: AppDependencies): FastifyI
     status: "ok",
     schemaVersion: storage.schemaVersion(),
   }));
+
+  registerQueuePreviewRoute(app);
 
   return app;
 }

@@ -2,18 +2,15 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import {
-  removeTestDataDirs,
-  startTestSupervisor,
-  type TestSupervisor,
-} from "./helpers/supervisor.js";
+import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
+import { removeTempDirectories } from "./helpers/temp-dir.js";
 
 let supervisor: TestSupervisor | undefined;
 
 afterEach(async () => {
   await supervisor?.stop();
   supervisor = undefined;
-  await removeTestDataDirs();
+  await removeTempDirectories();
 });
 
 test("a freshly booted Supervisor reports itself healthy over HTTP", async () => {

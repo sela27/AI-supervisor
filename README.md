@@ -28,6 +28,37 @@ The service listens on `http://localhost:4317` by default and answers `GET /api/
 | `SUPERVISOR_HOST`      | `0.0.0.0` | Bind address                     |
 | `SUPERVISOR_LOG_LEVEL` | `info`    | Fastify/pino log level           |
 
+## Previewing a queue
+
+Point the Supervisor at a directory of local ticket files to see the Queue it would build —
+every ticket in dependency order, plus the Frontier (the tickets that could run right now):
+
+```bash
+curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json' -d '{"source":{"type":"local","directory":"./.scratch/my-feature/issues"}}'
+```
+
+Each ticket file is Markdown named `<NN>-<slug>.md`, in the shape `/to-tickets` writes:
+
+```markdown
+# 01 — Boot the app
+
+**What to build:** Something a developer can demo end to end.
+
+**Blocked by:** None — can start immediately
+
+**Status:** ready-for-agent
+
+- [ ] It boots
+```
+
+The title, `**Blocked by:**` and `**Status:**` lines are required; a file missing one is
+reported by name rather than skipped. The checkbox lines below those fields are the
+acceptance criteria. A blocking edge may name another ticket by its file name, its number,
+or its title — `01-boot-the-app.md`, `#1` and `01 — Boot the app` all point at the same
+ticket, and several may be listed comma-separated or as bullets under the field.
+`**Status:** done` marks a ticket finished — it is never runnable, and it no longer blocks
+its dependents.
+
 ## Checks
 
 ```bash
