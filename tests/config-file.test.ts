@@ -26,6 +26,8 @@ test("an instance with no config file to read keeps every default", async () => 
     port: 4317,
     host: "0.0.0.0",
     logLevel: "info",
+    // One retry per ticket, as the glossary has it.
+    attemptBudget: 2,
     runner: { permissionMode: "bypassPermissions" },
     // Nothing to fall back on: a start request must say everything itself.
     defaults: {},
@@ -38,6 +40,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
     port: 8080,
     host: "127.0.0.1",
     logLevel: "debug",
+    attemptBudget: 3,
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
     source: { type: "local", directory: "./tickets" },
     project: {
@@ -54,6 +57,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
     port: 8080,
     host: "127.0.0.1",
     logLevel: "debug",
+    attemptBudget: 3,
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
     defaults: {
       sourceDirectory: join(cwd, "tickets"),
@@ -171,6 +175,19 @@ test("pushing is a switch, so a setting that only looks like one is refused", as
   const cwd = await instanceWith({ project: { directory: "./app", pushCheckpoints: "false" } });
 
   expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/pushCheckpoints/);
+});
+
+test("an attempt budget that is not a number of attempts is refused", async () => {
+  // Nothing at all would run under a budget of none, and half an Attempt is not a
+  // thing — either is a number that was meant to say something else.
+  const none = await instanceWith({ attemptBudget: 0 });
+  expect(() => loadSupervisorConfig({ cwd: none, env: {} })).toThrow(/attemptBudget/);
+
+  const part = await instanceWith({ attemptBudget: 1.5 });
+  expect(() => loadSupervisorConfig({ cwd: part, env: {} })).toThrow(/attemptBudget/);
+
+  const written = await instanceWith({ attemptBudget: "two" });
+  expect(() => loadSupervisorConfig({ cwd: written, env: {} })).toThrow(/attemptBudget/);
 });
 
 test("a project may name its directory and leave verification to the start request", async () => {

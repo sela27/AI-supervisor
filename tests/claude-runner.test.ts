@@ -69,6 +69,27 @@ test("the Run is asked for the ticket, in the project's own directory", async ()
   expect(recorded.options[0]?.cwd).toBe(PROJECT);
 });
 
+test("a retry is told what refused the last attempt, and that its work is already gone", async () => {
+  const firstTime = workingRun();
+  await claudeCodeRunner({ launch: firstTime.launch }).run(request());
+  expect(firstTime.prompts[0]).not.toContain("earlier attempt");
+
+  const again = workingRun();
+  await claudeCodeRunner({ launch: again.launch }).run(
+    request({ previousFailure: 'verification command "npm test" exited 1\n  expected 2 to be 3' }),
+  );
+
+  const prompt = again.prompts[0] ?? "";
+  expect(prompt).toContain('verification command "npm test" exited 1');
+  expect(prompt).toContain("expected 2 to be 3");
+  // Runs share no context, so a fresh one would otherwise set about undoing damage
+  // that the reset has already undone.
+  expect(prompt).toContain("thrown away");
+  // And it is still a Run being asked to do the ticket, not to explain the failure.
+  expect(prompt).toContain("Boot the app");
+  expect(prompt).toContain("Commit your work");
+});
+
 test("full autonomy is the default, and the model and permission mode are configurable", async () => {
   const byDefault = workingRun();
   await claudeCodeRunner({ launch: byDefault.launch }).run(request());

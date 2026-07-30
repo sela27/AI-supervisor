@@ -51,6 +51,40 @@ export function commitsWork(project: TestProject): FakeRunnerBehaviour {
   };
 }
 
+/** What a Run prints on its way to being refused by the project's own tests. */
+export const BROKEN_OUTPUT = ["> npm test", "1 failing:", "  expected 2 to be 3"].join("\n");
+
+/**
+ * The residue a Run leaves when it gets part-way and then stops for any reason: a
+ * commit of its own, plus files left lying about. Exactly what a Checkpoint reset
+ * exists to throw away, whatever it was that stopped the Run.
+ */
+async function leaveHalfDoneWork(
+  project: TestProject,
+  ticketId: string,
+  subject: string,
+): Promise<void> {
+  await writeFile(join(project.directory, `${ticketId}-half.txt`), "half-written", "utf8");
+  await project.git("add", "-A");
+  await project.git("commit", "-m", subject);
+  await writeFile(join(project.directory, `${ticketId}-scratch.txt`), "left behind", "utf8");
+}
+
+/** A Run that half-did the ticket and then reported failure. */
+export function leavesBrokenWork(project: TestProject): FakeRunnerBehaviour {
+  return async (request) => {
+    await leaveHalfDoneWork(project, request.ticket.id, `Broken work for ${request.ticket.id}`);
+    return { status: "failed", reason: "the tests never passed", output: BROKEN_OUTPUT };
+  };
+}
+
+/** Works the ticket the id names; leaves broken work on every other one. */
+export function succeedsOnly(project: TestProject, succeeding: string): FakeRunnerBehaviour {
+  const works = commitsWork(project);
+  const breaks = leavesBrokenWork(project);
+  return (request) => (request.ticket.id === succeeding ? works(request) : breaks(request));
+}
+
 /**
  * A Run cut off by the subscription's usage limit half-way through: it had
  * committed something and left more lying about when the quota refused it.
@@ -60,11 +94,7 @@ export function stoppedByTheLimit(
   resetAt: Date | null,
 ): FakeRunnerBehaviour {
   return async (request) => {
-    const id = request.ticket.id;
-    await writeFile(join(project.directory, `${id}-half.txt`), "half-written", "utf8");
-    await project.git("add", "-A");
-    await project.git("commit", "-m", `Half of ${id}`);
-    await writeFile(join(project.directory, `${id}-scratch.txt`), "left behind", "utf8");
+    await leaveHalfDoneWork(project, request.ticket.id, `Half of ${request.ticket.id}`);
     return { status: "limit-hit", resetAt, output: "Working on it, then the quota ran out." };
   };
 }

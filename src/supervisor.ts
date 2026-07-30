@@ -36,6 +36,7 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   const engine = createQueueEngine({
     runner: options.runner ?? unavailableRunner(),
     storage,
+    attemptBudget: config.attemptBudget,
   });
   const app = buildApp({
     storage,

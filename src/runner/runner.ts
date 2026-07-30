@@ -4,6 +4,12 @@ import type { Ticket } from "../tickets/ticket.js";
 export interface RunRequest {
   ticket: Ticket;
   projectDirectory: string;
+  /**
+   * Why the last Attempt at this ticket was refused, when there was one. Runs
+   * share no context and the refused Attempt's work has already been thrown
+   * away, so this is everything this Run can know of what went before it.
+   */
+  previousFailure?: string;
   /** Handed each line of output as it arrives, for watching a Run as it happens. */
   onOutput?: (chunk: string) => void;
 }

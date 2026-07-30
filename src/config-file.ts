@@ -29,10 +29,20 @@ export interface FileSettings {
   logLevel?: string;
   model?: string;
   permissionMode?: ClaudeCodeRunnerOptions["permissionMode"];
+  attemptBudget?: number;
   defaults: QueueRunDefaults;
 }
 
-const FILE_SETTINGS = ["dataDir", "port", "host", "logLevel", "runner", "source", "project"];
+const FILE_SETTINGS = [
+  "dataDir",
+  "port",
+  "host",
+  "logLevel",
+  "attemptBudget",
+  "runner",
+  "source",
+  "project",
+];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
 const SOURCE_SETTINGS = ["type", "directory"];
 const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
@@ -84,6 +94,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const port = wholePort(path, settings.port);
   const host = text(path, settings.host, "host");
   const logLevel = text(path, settings.logLevel, "logLevel");
+  const attemptBudget = budget(path, settings.attemptBudget);
   const model = text(path, runner.model, "runner.model");
   const permissionMode = mode(path, runner.permissionMode);
   const sourceDirectory = directory(path, source.directory, "source.directory");
@@ -98,6 +109,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(logLevel === undefined ? {} : { logLevel }),
     ...(model === undefined ? {} : { model }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(attemptBudget === undefined ? {} : { attemptBudget }),
     defaults: {
       ...(sourceDirectory === undefined ? {} : { sourceDirectory }),
       ...(projectDirectory === undefined ? {} : { projectDirectory }),
@@ -173,6 +185,22 @@ function flag(path: string, value: unknown, name: string): boolean | undefined {
     throw new Error(`${setting(path, name)} must be true or false, got ${quote(value)}`);
   }
   return value;
+}
+
+/**
+ * How many Attempts one ticket may spend. Zero would be a Supervisor that runs
+ * nothing at all, and a fraction of an Attempt is not a thing — either is a
+ * number that meant something else, and neither is worth finding out at 3am.
+ */
+function budget(path: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new Error(
+      `${setting(path, "attemptBudget")} must be a whole number of attempts, at least 1, ` +
+        `got ${quote(value)}`,
+    );
+  }
+  return value as number;
 }
 
 function commands(path: string, value: unknown): string[] | undefined {

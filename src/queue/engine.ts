@@ -99,6 +99,8 @@ interface RunContext extends QueueRunRequest {
   storage: Storage;
   queued: Queued[];
   live: LiveOutput;
+  /** How many Attempts a ticket may spend before the run gives up on it. */
+  attemptBudget: number;
   /**
    * Where a failed Attempt is thrown back to: this run's last Checkpoint, or the
    * commit recording the last failure, whichever came later. Never an Attempt's
@@ -111,6 +113,12 @@ export interface QueueEngineDependencies {
   runner: Runner;
   /** Where Attempt logs are kept — out of the repository the failure path resets. */
   storage: Storage;
+  /**
+   * How many Attempts one ticket gets. One is a Supervisor that never retries;
+   * anything more spends the extra goes on tickets that were refused, each told
+   * what refused the last one.
+   */
+  attemptBudget: number;
 }
 
 export function createQueueEngine(dependencies: QueueEngineDependencies): QueueEngine {
@@ -167,6 +175,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       storage: dependencies.storage,
       queued,
       live,
+      attemptBudget: dependencies.attemptBudget,
       restorePoint: await repository.headCommit(),
     });
 
@@ -205,7 +214,7 @@ async function execute(context: RunContext): Promise<void> {
     for (;;) {
       const next = nextOnFrontier(context.queued);
       if (!next) break;
-      await attempt(next, context);
+      await attemptTicket(next, context);
     }
     context.run.state = "completed";
   } catch (error) {
@@ -218,12 +227,51 @@ async function execute(context: RunContext): Promise<void> {
 }
 
 /**
- * One Attempt: a single Run of the ticket, then the Supervisor's own Verification
- * of what it left behind. Claude's own report is never enough on its own.
+ * The ticket's whole turn: Attempts until one of them is verified or the budget
+ * is spent. Each retry is a fresh Run told what the last one was refused for —
+ * the second go is meant to be smarter than the first, not merely another one.
  */
-async function attempt(queued: Queued, context: RunContext): Promise<void> {
-  const { entry, ticket } = queued;
-  entry.state = "running";
+async function attemptTicket(queued: Queued, context: RunContext): Promise<void> {
+  queued.entry.state = "running";
+
+  let refusal = await attempt(queued, undefined, context);
+  for (let spent = 1; refusal !== undefined && spent < context.attemptBudget; spent += 1) {
+    refusal = await attempt(queued, feedbackOn(refusal), context);
+  }
+
+  if (refusal !== undefined) {
+    await failTicket(queued, refusal.reason, context);
+    return;
+  }
+
+  await checkpoint(queued, context);
+}
+
+/**
+ * What a refused Attempt leaves the next one to go on: why it was refused, and —
+ * where a check was what refused it — what that check printed. `exited 1` on its
+ * own is nothing a second Attempt can be smarter about.
+ *
+ * The refused Run's own transcript is deliberately not among it. A fresh context
+ * per Run is the design, an hour of narration would swamp the ticket it is
+ * wrapped around, and where the Run itself reported the failure its reason is
+ * already its own account of it. The whole transcript is kept, under `/attempts`.
+ */
+function feedbackOn(refusal: Refusal): string {
+  return joined(refusal.reason, refusal.output);
+}
+
+/**
+ * One Attempt: a single Run of the ticket, then the Supervisor's own Verification
+ * of what it left behind. Claude's own report is never enough on its own. Answers
+ * why Verification refused it, or nothing at all when the Attempt stands.
+ */
+async function attempt(
+  queued: Queued,
+  previousFailure: string | undefined,
+  context: RunContext,
+): Promise<Refusal | undefined> {
+  const { ticket } = queued;
 
   const before = await context.repository.headCommit();
   // The Attempt in flight becomes the one being watched; the last one's output
@@ -234,12 +282,13 @@ async function attempt(queued: Queued, context: RunContext): Promise<void> {
   const outcome = await context.runner.run({
     ticket,
     projectDirectory: context.project.directory,
+    ...(previousFailure === undefined ? {} : { previousFailure }),
     onOutput: (chunk) => context.live.lines.push(chunk),
   });
 
   if (outcome.status === "limit-hit") {
     await discardOnLimit(queued, outcome, context);
-    return;
+    throw usageLimitStopped(queued, outcome.resetAt);
   }
 
   const refusal = await verificationRefusal(outcome, before, context);
@@ -253,10 +302,18 @@ async function attempt(queued: Queued, context: RunContext): Promise<void> {
     output: joined(outcome.output, refusal?.output),
   });
 
-  if (refusal !== undefined) {
-    await failTicket(queued, refusal.reason, context);
-    return;
-  }
+  if (refusal === undefined) return undefined;
+
+  // A refused Attempt is thrown back the moment it is refused, whether the ticket
+  // has another go coming or has just run out of them: nothing it left behind may
+  // reach the next Run, and nothing may reach the branch either.
+  await context.repository.resetTo(context.restorePoint);
+  return refusal;
+}
+
+/** Ends a verified ticket: the write-back, the Checkpoint, and the push. */
+async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
+  const { entry, ticket } = queued;
 
   await markLocalTicketDone(context.sourceDirectory, ticket.id);
   // The write-back, and anything the Run left uncommitted, ride along in the
@@ -297,9 +354,8 @@ async function pushCheckpoint(context: RunContext): Promise<void> {
  * half-finished Attempt is thrown back like any other, but the ticket goes back
  * on the Frontier untouched and nothing is written to the Ticket Source.
  *
- * The queue then stops at Paused-on-limit. Waiting the limit out and picking the
- * run up again by itself is not built yet, so for now the wait is the user's —
- * but a limit is never allowed to read as a ticket that failed.
+ * A limit is never allowed to read as a ticket that failed, nor to cost the ticket
+ * one of its Attempts.
  */
 async function discardOnLimit(
   queued: Queued,
@@ -316,11 +372,17 @@ async function discardOnLimit(
 
   await context.repository.resetTo(context.restorePoint);
   queued.entry.state = "pending";
+}
 
-  throw new UsageLimitError(
-    `the subscription's usage limit stopped the run${liftsAt(outcome.resetAt)}. ` +
+/**
+ * What stops the queue at Paused-on-limit. Waiting the limit out and picking the
+ * run up again by itself is not built yet, so for now the wait is the user's.
+ */
+function usageLimitStopped(queued: Queued, resetAt: Date | null): UsageLimitError {
+  return new UsageLimitError(
+    `the subscription's usage limit stopped the run${liftsAt(resetAt)}. ` +
       `${queued.ticket.id} was not attempted; start the run again once the limit has lifted.`,
-    outcome.resetAt,
+    resetAt,
   );
 }
 
@@ -355,15 +417,15 @@ async function verificationRefusal(
 }
 
 /**
- * Gives up on a ticket: the Attempt's half-work goes back to the restore point, the
- * failure is written back to the ticket, and everything that was waiting on this
- * ticket is taken out of the queue.
+ * Gives up on a ticket once its every Attempt has been refused: the failure is
+ * written back to the ticket, and everything that was waiting on this ticket is
+ * taken out of the queue. What the Attempts left behind is already gone — each
+ * was thrown back the moment it was refused.
  */
 async function failTicket(queued: Queued, reason: string, context: RunContext): Promise<void> {
   queued.entry.state = "failed";
   queued.entry.failure = reason;
 
-  await context.repository.resetTo(context.restorePoint);
   await markLocalTicketFailed(context.sourceDirectory, queued.ticket.id, reason);
   // Committing the write-back is what ends the ticket cleanly: the branch is left
   // with nothing uncommitted, so the next ticket's Checkpoint stays its own work

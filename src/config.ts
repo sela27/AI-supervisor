@@ -15,6 +15,8 @@ export interface SupervisorConfig {
   port: number;
   host: string;
   logLevel: string;
+  /** How many Attempts one ticket gets before the run gives up on it. */
+  attemptBudget: number;
   /** How this instance drives Claude Code. One instance, one project, one setting. */
   runner: ClaudeCodeRunnerOptions;
   /** What a start request falls back to when it does not say for itself. */
@@ -32,6 +34,8 @@ const DEFAULTS = {
   port: 4317,
   host: "0.0.0.0",
   logLevel: "info",
+  /** One retry: enough for a ticket that stumbled, short of burning the night on one. */
+  attemptBudget: 2,
   /** Nothing may stop to ask: the whole point is that nobody is there to answer. */
   permissionMode: "bypassPermissions",
 } as const;
@@ -55,6 +59,7 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
     port: envPort(env.SUPERVISOR_PORT) ?? file.port ?? DEFAULTS.port,
     host: set(env.SUPERVISOR_HOST) ?? file.host ?? DEFAULTS.host,
     logLevel: set(env.SUPERVISOR_LOG_LEVEL) ?? file.logLevel ?? DEFAULTS.logLevel,
+    attemptBudget: file.attemptBudget ?? DEFAULTS.attemptBudget,
     runner: {
       // Left unset, the Claude Code CLI picks its own model.
       ...(model === undefined ? {} : { model }),

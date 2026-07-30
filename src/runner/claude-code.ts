@@ -9,7 +9,6 @@ import {
 
 import { messageOf } from "../errors.js";
 import type { RunOutcome, RunRequest, Runner } from "./runner.js";
-import type { Ticket } from "../tickets/ticket.js";
 
 /**
  * How a Run is launched. The real one is the Agent SDK's `query`; tests pass a
@@ -69,7 +68,7 @@ export function claudeCodeRunner(options: ClaudeCodeRunnerOptions = {}): Runner 
 
       try {
         for await (const message of launch({
-          prompt: promptFor(request.ticket),
+          prompt: promptFor(request),
           options: optionsFor(request, options),
         })) {
           if (message.type === "assistant") record(...linesOf(message));
@@ -94,11 +93,13 @@ function optionsFor(request: RunRequest, options: ClaudeCodeRunnerOptions): Opti
 }
 
 /**
- * What the Run is sent off to do. The ticket's own words, and the two things the
- * Supervisor needs of every Run: a commit to verify, and the ticket file left
- * alone so the Supervisor's own write-back is the only account of the outcome.
+ * What the Run is sent off to do. The ticket's own words, whatever the last
+ * Attempt was refused for, and the two things the Supervisor needs of every Run:
+ * a commit to verify, and the ticket file left alone so the Supervisor's own
+ * write-back is the only account of the outcome.
  */
-function promptFor(ticket: Ticket): string {
+function promptFor(request: RunRequest): string {
+  const { ticket } = request;
   const criteria = ticket.acceptanceCriteria.map((criterion) => `- ${criterion.text}`);
 
   return [
@@ -107,9 +108,26 @@ function promptFor(ticket: Ticket): string {
     `# ${ticket.title}`,
     ``,
     ...(criteria.length === 0 ? [] : [`Acceptance criteria:`, ...criteria, ``]),
+    ...(request.previousFailure === undefined ? [] : feedbackBlock(request.previousFailure)),
     `Commit your work when it is done — an uncommitted attempt does not count.`,
     `Do not push, and do not edit the ticket's own file: the Supervisor records the outcome itself.`,
   ].join("\n");
+}
+
+/**
+ * The one thing that survives a refused Attempt. Its work is already gone, so the
+ * Run is told what it is starting from as well as what went wrong — otherwise a
+ * fresh context reads the failure as damage still waiting to be undone.
+ */
+function feedbackBlock(failure: string): string[] {
+  return [
+    `An earlier attempt at this ticket was refused, and its work was thrown away —`,
+    `the repository is back to where it stood before it ran. This is what it was`,
+    `refused for:`,
+    ``,
+    failure,
+    ``,
+  ];
 }
 
 /** Decides what the finished Run amounts to. */

@@ -1,9 +1,8 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { createTestProject, type TestProject } from "./helpers/project.js";
+import { createTestProject } from "./helpers/project.js";
 import {
   readAttempts,
   requestStart,
@@ -12,7 +11,13 @@ import {
   ticketOf,
   waitForQueue,
 } from "./helpers/queue.js";
-import { commitsWork, fakeRunner, type FakeRunnerBehaviour } from "./helpers/runner.js";
+import {
+  BROKEN_OUTPUT,
+  commitsWork,
+  fakeRunner,
+  leavesBrokenWork,
+  succeedsOnly,
+} from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
 import { removeTempDirectories } from "./helpers/temp-dir.js";
 import { ticketFile } from "./helpers/ticket-files.js";
@@ -24,31 +29,6 @@ afterEach(async () => {
   supervisor = undefined;
   await removeTempDirectories();
 });
-
-const BROKEN_OUTPUT = ["> npm test", "1 failing:", "  expected 2 to be 3"].join("\n");
-
-/**
- * A Run that half-did the ticket — a commit of its own, plus files left lying
- * about — and then reported failure. Exactly the residue a Checkpoint reset exists
- * to throw away.
- */
-function leavesBrokenWork(project: TestProject): FakeRunnerBehaviour {
-  return async (request) => {
-    const id = request.ticket.id;
-    await writeFile(join(project.directory, `${id}-half.txt`), "half-written", "utf8");
-    await project.git("add", "-A");
-    await project.git("commit", "-m", `Broken work for ${id}`);
-    await writeFile(join(project.directory, `${id}-scratch.txt`), "left behind", "utf8");
-    return { status: "failed", reason: "the tests never passed", output: BROKEN_OUTPUT };
-  };
-}
-
-/** Works the ticket the first id names; breaks every other one. */
-function succeedsOnly(project: TestProject, succeeding: string): FakeRunnerBehaviour {
-  const works = commitsWork(project);
-  const breaks = leavesBrokenWork(project);
-  return (request) => (request.ticket.id === succeeding ? works(request) : breaks(request));
-}
 
 test("a failed attempt leaves the branch exactly at the last Checkpoint, with no residue", async () => {
   const project = await createTestProject({
@@ -151,7 +131,8 @@ test("every ticket that depends on a failure is skipped, transitively, and never
   await startRun(supervisor, project);
   const finished = await waitForQueue(supervisor, (queue) => queue.state === "completed");
 
-  expect(runner.order).toEqual(["01-boot-the-app"]);
+  // The doomed ticket spent its whole budget; the ones waiting on it got nothing.
+  expect(runner.order).toEqual(["01-boot-the-app", "01-boot-the-app"]);
   expect(stateOf(finished, "02-add-search")).toBe("skipped");
   expect(stateOf(finished, "03-rank-results")).toBe("skipped");
   // A skipped ticket says which blocker stopped it, not just that it stopped.
@@ -173,7 +154,7 @@ test("a failure never stops the tickets that do not depend on it", async () => {
   await startRun(supervisor, project);
   const finished = await waitForQueue(supervisor, (queue) => queue.state === "completed");
 
-  expect(runner.order).toEqual(["01-boot-the-app", "03-write-docs"]);
+  expect(runner.order).toEqual(["01-boot-the-app", "01-boot-the-app", "03-write-docs"]);
   expect(finished.tickets.map((ticket) => [ticket.id, ticket.state])).toEqual([
     ["01-boot-the-app", "failed"],
     ["02-add-search", "skipped"],
@@ -198,8 +179,7 @@ test("an attempt's full output is retained and retrievable despite the git reset
   await waitForQueue(supervisor, (queue) => queue.state === "completed");
 
   const failed = await readAttempts(supervisor, "01-boot-the-app");
-  expect(failed).toHaveLength(1);
-  expect(failed[0]?.outcome).toBe("failed");
+  expect(failed.map((attempt) => attempt.outcome)).toEqual(["failed", "failed"]);
   expect(failed[0]?.failure).toContain("the tests never passed");
   // The whole log, not a summary of it — the reset destroyed every other trace.
   expect(failed[0]?.output).toBe(BROKEN_OUTPUT);

@@ -34,6 +34,7 @@ below.
   "port": 4317,
   "host": "0.0.0.0",
   "logLevel": "info",
+  "attemptBudget": 2,
   "runner": {
     "model": "claude-opus-5",
     "permissionMode": "bypassPermissions"
@@ -78,8 +79,8 @@ image it was built from:
 | `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
 | `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
 
-The ticket source and the project have no environment variables: they are what an instance
-_is_, and the file is where they belong.
+The ticket source, the project and the attempt budget have no environment variables: they
+are what an instance _is_, and the file is where they belong.
 
 ## Previewing a queue
 
@@ -210,11 +211,30 @@ Waiting the limit out and picking the run up automatically is not built yet, so 
 wait is yours: start the run again once the limit has lifted and it carries on from the
 Checkpoints already on the branch.
 
+## When an attempt is refused
+
+A refused Attempt is thrown all the way back to the last Checkpoint the moment it is
+refused — its commits, its edits and the files it created all go, so no broken half-work
+reaches the next Run or the branch. Ignored files (`node_modules` and friends) are left
+alone.
+
+The ticket then gets another go. Each ticket has an attempt budget, two by default, and a
+retry is a fresh Run like any other — told, on top of the ticket, what refused the last
+Attempt and that the repository is already back to where it stood before it ran. Where a
+check refused the Attempt, what that check printed goes along with the reason: `exited 1`
+on its own is not something a second attempt can be smarter about.
+
+```json
+{ "attemptBudget": 3 }
+```
+
+A budget of `1` is a Supervisor that never retries. A usage limit never costs a ticket an
+Attempt — nothing was learned about the ticket, so nothing is spent.
+
 ## When a ticket fails
 
-A failed Attempt is thrown all the way back to the last Checkpoint — its commits, its edits
-and the files it created all go, so no broken half-work reaches the next ticket. Ignored
-files (`node_modules` and friends) are left alone.
+A ticket whose every Attempt was refused has failed, and the last one's work is already
+gone with the rest.
 
 The ticket's own file is then rewritten to `**Status:** failed` with a `## Supervisor
 failure` section quoting the summary, so morning triage starts from the ticket itself. That
