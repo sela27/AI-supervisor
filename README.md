@@ -21,16 +21,64 @@ npm run dev
 
 The service listens on `http://localhost:4317` by default and answers `GET /api/health`.
 
-| Variable                      | Default             | Meaning                                   |
-| ----------------------------- | ------------------- | ----------------------------------------- |
-| `SUPERVISOR_DATA_DIR`         | `./data`            | Where the SQLite database lives           |
-| `SUPERVISOR_PORT`             | `4317`              | HTTP port (`0` picks a free one)          |
-| `SUPERVISOR_HOST`             | `0.0.0.0`           | Bind address                              |
-| `SUPERVISOR_LOG_LEVEL`        | `info`              | Fastify/pino log level                    |
-| `SUPERVISOR_MODEL`            | the CLI's own       | Model each Run uses                       |
-| `SUPERVISOR_PERMISSION_MODE`  | `bypassPermissions` | How much a Run may do without being asked |
+## Configuring an instance
 
-Both Runner settings are per instance — one Supervisor, one project, one model.
+One Supervisor minds one project, so everything about that project is settled once in
+`supervisor.config.json` next to where the service is started. Every setting is optional; the
+file itself is optional too, and an instance with no config file at all keeps the defaults
+below.
+
+```json
+{
+  "dataDir": "./data",
+  "port": 4317,
+  "host": "0.0.0.0",
+  "logLevel": "info",
+  "runner": {
+    "model": "claude-opus-5",
+    "permissionMode": "bypassPermissions"
+  },
+  "source": {
+    "type": "local",
+    "directory": "./.scratch/my-feature/issues"
+  },
+  "project": {
+    "directory": "/path/to/project",
+    "verify": ["npm run typecheck", "npm test"]
+  }
+}
+```
+
+`source` and `project` are what a run would otherwise have to be told every time — with them
+in the file, starting a run needs nothing but the instruction to start. A start request that
+names one of them anyway wins, for that run only.
+
+Every directory in the file — `dataDir`, `source.directory`, `project.directory` — is read
+against the file's own directory rather than against wherever the service happened to be
+started from: the settings travel with the deployment, so what they point at travels with
+them.
+
+Point an instance at a different file with `SUPERVISOR_CONFIG`. A file named that way must
+exist; the unnamed `supervisor.config.json` may simply be absent. A setting the Supervisor
+does not recognise, a value of the wrong shape, and a file that is not JSON each stop the
+service from starting rather than waiting to spoil a run at 3am — a misspelled setting that
+is quietly ignored is a setting that never applied.
+
+Each of these environment variables overrides the file, so one container can differ from the
+image it was built from:
+
+| Variable                     | Setting              | Default             | Meaning                                   |
+| ---------------------------- | -------------------- | ------------------- | ----------------------------------------- |
+| `SUPERVISOR_CONFIG`          | —                    | `./supervisor.config.json` | Which config file to read          |
+| `SUPERVISOR_DATA_DIR`        | `dataDir`            | `./data`            | Where the SQLite database lives           |
+| `SUPERVISOR_PORT`            | `port`               | `4317`              | HTTP port (`0` picks a free one)          |
+| `SUPERVISOR_HOST`            | `host`               | `0.0.0.0`           | Bind address                              |
+| `SUPERVISOR_LOG_LEVEL`       | `logLevel`           | `info`              | Fastify/pino log level                    |
+| `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
+| `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
+
+The ticket source and the project have no environment variables: they are what an instance
+_is_, and the file is where they belong.
 
 ## Previewing a queue
 
@@ -40,6 +88,9 @@ every ticket in dependency order, plus the Frontier (the tickets that could run 
 ```bash
 curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json' -d '{"source":{"type":"local","directory":"./.scratch/my-feature/issues"}}'
 ```
+
+An instance whose config file already names its source needs none of that — `-d '{}'` previews
+the queue it was configured with.
 
 Each ticket file is Markdown named `<NN>-<slug>.md`, in the shape `/to-tickets` writes:
 
@@ -71,6 +122,10 @@ order, each on a branch the Supervisor creates for the run:
 ```bash
 curl -X POST localhost:4317/api/queue/start -H 'content-type: application/json' -d '{"source":{"type":"local","directory":"./.scratch/my-feature/issues"},"project":{"directory":"/path/to/project","verify":["npm run typecheck","npm test"]}}'
 ```
+
+With a configured instance that is just `-d '{}'`. Anything the request does name is used
+instead of the file for that run — a single run can be verified harder, or read its tickets
+from somewhere else, without the instance's own settings changing.
 
 The project must be a git repository with nothing uncommitted — a run commits everything it
 finds, so work left lying about would land in a Checkpoint as if Claude had written it. The

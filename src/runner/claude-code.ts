@@ -7,6 +7,7 @@ import {
   type SDKRateLimitInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { messageOf } from "../errors.js";
 import type { RunOutcome, RunRequest, Runner } from "./runner.js";
 import type { Ticket } from "../tickets/ticket.js";
 
@@ -150,7 +151,7 @@ function saysLimit(message: string): boolean {
 
 /** The SDK's own failures — a missing CLI, a dropped connection — arrive as throws. */
 function brokeDown(error: unknown, output: string): RunOutcome {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = messageOf(error);
   if (saysLimit(message) || /usage limit|rate limit|limit reached/i.test(message)) {
     return { status: "limit-hit", resetAt: null, output };
   }

@@ -1,9 +1,12 @@
 import type { FastifyInstance } from "fastify";
 
+import type { QueueRunDefaults } from "../../config.js";
+import { asRecord } from "../../json.js";
 import type { Project, QueueEngine } from "../../queue/engine.js";
 import type { Storage } from "../../storage.js";
+import { isVerification } from "../../verification/verifier.js";
 import { badRequest, sendError, toErrorResponse } from "../errors.js";
-import { asRecord, readSourceSelection, type Read } from "../request-body.js";
+import { notSupplied, readSourceSelection, type Read } from "../request-body.js";
 
 const PROJECT_SHAPE =
   'A project looks like { "project": { "directory": "/path/to/repo", "verify": ["npm test"] } }';
@@ -14,6 +17,8 @@ const IDLE_QUEUE = { id: null, branch: null, state: "idle", tickets: [], error: 
 export interface QueueRunDependencies {
   engine: QueueEngine;
   storage: Storage;
+  /** What the instance was configured with, for whatever a start request leaves out. */
+  defaults: QueueRunDefaults;
 }
 
 /**
@@ -23,7 +28,7 @@ export interface QueueRunDependencies {
  */
 export function registerQueueRunRoutes(
   app: FastifyInstance,
-  { engine, storage }: QueueRunDependencies,
+  { engine, storage, defaults }: QueueRunDependencies,
 ): void {
   app.get("/api/queue", async () => engine.current() ?? IDLE_QUEUE);
 
@@ -48,10 +53,10 @@ export function registerQueueRunRoutes(
   );
 
   app.post("/api/queue/start", async (request, reply) => {
-    const source = readSourceSelection(request.body);
+    const source = readSourceSelection(request.body, defaults.sourceDirectory);
     if (!source.ok) return sendError(reply, badRequest(source.message));
 
-    const project = readProject(request.body);
+    const project = readProject(request.body, defaults);
     if (!project.ok) return sendError(reply, badRequest(project.message));
 
     try {
@@ -66,28 +71,30 @@ export function registerQueueRunRoutes(
   });
 }
 
-function readProject(body: unknown): Read<Project> {
-  const project = asRecord(asRecord(body)?.project);
+/** The request's project, falling back setting by setting to the configured one. */
+function readProject(body: unknown, defaults: QueueRunDefaults): Read<Project> {
+  const named = asRecord(body)?.project;
+  // Nothing said about the project is a request to use the configured one; a
+  // project written as something other than a project is a mistake.
+  const project = named === undefined ? {} : asRecord(named);
   if (!project) return { ok: false, message: PROJECT_SHAPE };
 
-  const directory = project.directory;
+  const directory = project.directory ?? defaults.projectDirectory;
   if (typeof directory !== "string" || directory.trim() === "") {
-    return { ok: false, message: `A project needs a directory. ${PROJECT_SHAPE}` };
+    return { ok: false, message: notSupplied("A project needs a directory", PROJECT_SHAPE) };
   }
 
-  const verify = project.verify;
-  // Without a command of its own to run, the Supervisor would be left taking
-  // Claude's word for it — which is the one thing Verification exists to refuse.
-  if (!Array.isArray(verify) || verify.length === 0 || !verify.every(isCommand)) {
+  const verify = project.verify ?? defaults.verify;
+  if (!isVerification(verify)) {
     return {
       ok: false,
-      message: `Verification needs at least one shell command, and every Attempt must pass all of them. ${PROJECT_SHAPE}`,
+      message: notSupplied(
+        "Verification needs at least one shell command, and every Attempt must pass all of them",
+        PROJECT_SHAPE,
+      ),
     };
   }
 
-  return { ok: true, value: { directory, verify } };
-}
-
-function isCommand(value: unknown): value is string {
-  return typeof value === "string" && value.trim() !== "";
+  // A copy, so one run's commands can never be the same array as the next run's.
+  return { ok: true, value: { directory, verify: [...verify] } };
 }

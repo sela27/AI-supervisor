@@ -10,6 +10,19 @@ export type VerificationResult =
   /** `output` is what the refusing command printed — the reason behind the reason. */
   | { ok: false; failure: string; output: string };
 
+/**
+ * Whether a project's `verify` setting could refuse an Attempt at all. Without a
+ * command of its own to run, the Supervisor would be left taking Claude's word
+ * for it — which is the one thing Verification exists to refuse.
+ */
+export function isVerification(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((command) => typeof command === "string" && command.trim() !== "")
+  );
+}
+
 export async function verify(
   commands: readonly string[],
   directory: string,

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import type { FastifyServerOptions } from "fastify";
 
+import type { SupervisorConfig } from "./config.js";
 import { buildApp } from "./http/app.js";
 import { createQueueEngine } from "./queue/engine.js";
 import type { Runner } from "./runner/runner.js";
@@ -10,11 +11,8 @@ import { unavailableRunner } from "./runner/unavailable.js";
 import { openStorage } from "./storage.js";
 
 export interface SupervisorOptions {
-  /** Directory holding the Supervisor's SQLite database. Created if missing. */
-  dataDir: string;
-  /** Port to listen on; 0 asks the OS for a free one (used by tests). */
-  port: number;
-  host: string;
+  /** Everything the instance was configured with, file and environment together. */
+  config: SupervisorConfig;
   /** Off by default so tests stay quiet; the real entrypoint turns it on. */
   logger?: FastifyServerOptions["logger"];
   /** Executes one Attempt. Tests substitute a fake so no Claude Code is launched. */
@@ -30,7 +28,8 @@ export interface RunningSupervisor {
 export const DATABASE_FILENAME = "supervisor.db";
 
 export async function startSupervisor(options: SupervisorOptions): Promise<RunningSupervisor> {
-  const dataDir = resolve(options.dataDir);
+  const { config } = options;
+  const dataDir = resolve(config.dataDir);
   mkdirSync(dataDir, { recursive: true });
 
   const storage = openStorage(join(dataDir, DATABASE_FILENAME));
@@ -38,10 +37,15 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
     runner: options.runner ?? unavailableRunner(),
     storage,
   });
-  const app = buildApp({ storage, engine, logger: options.logger });
+  const app = buildApp({
+    storage,
+    engine,
+    defaults: config.defaults,
+    logger: options.logger,
+  });
 
   try {
-    await app.listen({ port: options.port, host: options.host });
+    await app.listen({ port: config.port, host: config.host });
   } catch (error) {
     storage.close();
     throw error;

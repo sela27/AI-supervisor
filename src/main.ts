@@ -1,13 +1,12 @@
-import { loadSupervisorConfig } from "./config.js";
+import { loadSupervisorConfig, type SupervisorConfig } from "./config.js";
+import { messageOf } from "./errors.js";
 import { claudeCodeRunner } from "./runner/claude-code.js";
 import { startSupervisor } from "./supervisor.js";
 
-const config = loadSupervisorConfig();
+const config = configOrExit();
 
 const supervisor = await startSupervisor({
-  dataDir: config.dataDir,
-  port: config.port,
-  host: config.host,
+  config,
   logger: { level: config.logLevel },
   // The one place a real Claude Code Run is ever launched from.
   runner: claudeCodeRunner(config.runner),
@@ -25,4 +24,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       },
     );
   });
+}
+
+/** A settings mistake is the user's to fix; a stack trace only buries what to fix. */
+function configOrExit(): SupervisorConfig {
+  try {
+    return loadSupervisorConfig();
+  } catch (error) {
+    console.error(messageOf(error));
+    process.exit(1);
+  }
 }

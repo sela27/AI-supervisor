@@ -1,3 +1,4 @@
+import { messageOf } from "../errors.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { Storage } from "../storage.js";
@@ -203,7 +204,7 @@ async function execute(context: RunContext): Promise<void> {
     }
     context.run.state = "completed";
   } catch (error) {
-    context.run.error = error instanceof Error ? error.message : String(error);
+    context.run.error = messageOf(error);
     // A usage limit is not a breakdown: nothing is wrong, there is just no quota
     // left to spend. Everything else — the repository moving under the run, the
     // source going away — means this queue did not complete.
