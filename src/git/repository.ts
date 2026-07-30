@@ -3,6 +3,9 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/** The name a project's remote goes by, short of a reason to think otherwise. */
+const REMOTE = "origin";
+
 /** The project's repository could not be used the way the run needs it. */
 export class GitError extends Error {
   constructor(message: string) {
@@ -19,6 +22,7 @@ export interface GitRepository {
   headCommit(): Promise<string>;
   /** True when the working tree holds anything not yet committed. */
   isDirty(): Promise<boolean>;
+  /** Whether the name is taken — here or, as far as this clone knows, on the remote. */
   branchExists(name: string): Promise<boolean>;
   /** Creates the branch and switches to it, carrying the working tree along. */
   createBranch(name: string): Promise<void>;
@@ -33,6 +37,11 @@ export interface GitRepository {
    * Attempt's residue is what goes, not the project's build output.
    */
   resetTo(commit: string): Promise<void>;
+  /**
+   * Sends the branch to the remote and tracks it from then on. Throws when the
+   * remote will not take it — what that means for the run is the run's to decide.
+   */
+  push(branch: string): Promise<void>;
 }
 
 export async function openRepository(directory: string): Promise<GitRepository> {
@@ -53,12 +62,17 @@ export async function openRepository(directory: string): Promise<GitRepository> 
     headCommit,
     isDirty,
     branchExists: async (name) => {
-      try {
-        await git("rev-parse", "--verify", `refs/heads/${name}`);
-        return true;
-      } catch {
-        return false;
-      }
+      // A name already taken on the remote is taken: the branch would be created
+      // here without complaint and its very first push refused as out of date.
+      // Only what this clone has already seen of the remote counts — a fetch per
+      // run would put the network in front of every start.
+      const taken = await git(
+        "for-each-ref",
+        "--format=%(refname)",
+        `refs/heads/${name}`,
+        `refs/remotes/${REMOTE}/${name}`,
+      );
+      return taken !== "";
     },
     createBranch: async (name) => {
       await git("checkout", "-b", name);
@@ -74,6 +88,12 @@ export async function openRepository(directory: string): Promise<GitRepository> 
       // Files the Attempt created were never tracked, so the reset alone would
       // leave them sitting in the working tree.
       await git("clean", "-fd");
+    },
+    push: async (branch) => {
+      // A plain fast-forward push, every time: the run only ever pushes at a
+      // Checkpoint and never resets behind one, so the remote is never ahead and
+      // there is nothing to force over.
+      await git("push", "--set-upstream", REMOTE, branch);
     },
   };
 }

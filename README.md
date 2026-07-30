@@ -44,7 +44,8 @@ below.
   },
   "project": {
     "directory": "/path/to/project",
-    "verify": ["npm run typecheck", "npm test"]
+    "verify": ["npm run typecheck", "npm test"],
+    "pushCheckpoints": true
   }
 }
 ```
@@ -149,6 +150,30 @@ ticket.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
+
+## Following a run from elsewhere
+
+Every Checkpoint is pushed to `origin` as soon as the ticket that earned it succeeds, so
+the branch on the remote is never more than one ticket behind the work and the night can be
+followed from a phone. The first push creates the branch there and sets its upstream, so
+picking it up by hand afterwards needs no arguments. A run never takes a branch name this
+clone has already seen on the remote, so a redeployed Supervisor cannot start a night's work
+on a branch whose first push would be refused.
+
+Pushing is no part of Verification. A ticket that passed its `verify` commands has succeeded,
+and a remote that will not take the commit — none configured, unreachable, rejecting — does
+not undo that: the ticket stays succeeded, the reason appears in the run's `pushFailure`
+field, and the run carries on. The next Checkpoint that does get through clears the field and
+carries everything before it along. Only Checkpoints are pushed, so a discarded Attempt's
+work never reaches the remote at all.
+
+A project with nowhere to push says so once, and no push is attempted:
+
+```json
+{ "project": { "directory": "/path/to/project", "pushCheckpoints": false } }
+```
+
+Like the rest of the project, a start request can name `pushCheckpoints` for one run only.
 
 ## How a ticket is run
 

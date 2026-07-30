@@ -12,7 +12,14 @@ const PROJECT_SHAPE =
   'A project looks like { "project": { "directory": "/path/to/repo", "verify": ["npm test"] } }';
 
 /** Before the first run there is nothing to report but the fact that nothing is running. */
-const IDLE_QUEUE = { id: null, branch: null, state: "idle", tickets: [], error: null };
+const IDLE_QUEUE = {
+  id: null,
+  branch: null,
+  state: "idle",
+  tickets: [],
+  error: null,
+  pushFailure: null,
+};
 
 export interface QueueRunDependencies {
   engine: QueueEngine;
@@ -95,6 +102,13 @@ function readProject(body: unknown, defaults: QueueRunDefaults): Read<Project> {
     };
   }
 
+  // Publishing is what a run is for; a project that cannot be pushed is the one
+  // that has to say so.
+  const pushCheckpoints = project.pushCheckpoints ?? defaults.pushCheckpoints ?? true;
+  if (typeof pushCheckpoints !== "boolean") {
+    return { ok: false, message: `"pushCheckpoints" must be true or false` };
+  }
+
   // A copy, so one run's commands can never be the same array as the next run's.
-  return { ok: true, value: { directory, verify: [...verify] } };
+  return { ok: true, value: { directory, verify: [...verify], pushCheckpoints } };
 }

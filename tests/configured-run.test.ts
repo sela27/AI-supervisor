@@ -1,13 +1,12 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
 import { CONFIG_FILENAME } from "../src/config-file.js";
+import { instanceWith } from "./helpers/config-file.js";
 import { createTestProject, type TestProject } from "./helpers/project.js";
 import { readQueue, stateOf, waitForQueue } from "./helpers/queue.js";
 import { commitsWork, fakeRunner, type FakeRunner } from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
-import { createTempDirectory, removeTempDirectories } from "./helpers/temp-dir.js";
+import { removeTempDirectories } from "./helpers/temp-dir.js";
 import { createTicketDirectory, ticketFile } from "./helpers/ticket-files.js";
 
 let supervisor: TestSupervisor | undefined;
@@ -17,13 +16,6 @@ afterEach(async () => {
   supervisor = undefined;
   await removeTempDirectories();
 });
-
-/** An instance's own directory, with the config file it will be booted from. */
-async function instanceWith(settings: unknown): Promise<string> {
-  const directory = await createTempDirectory("supervisor-config-");
-  await writeFile(join(directory, CONFIG_FILENAME), JSON.stringify(settings), "utf8");
-  return directory;
-}
 
 /** The settings an instance minding one project would be given. */
 function settingsFor(project: TestProject): unknown {

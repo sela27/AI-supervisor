@@ -4,7 +4,8 @@ import { afterEach, expect, test } from "vitest";
 
 import { CONFIG_FILENAME } from "../src/config-file.js";
 import { loadSupervisorConfig } from "../src/config.js";
-import { createTempDirectory, removeTempDirectories } from "./helpers/temp-dir.js";
+import { instanceWith, instanceWithoutConfigFile } from "./helpers/config-file.js";
+import { removeTempDirectories } from "./helpers/temp-dir.js";
 
 /**
  * Reading an instance's settings happens before there is a service to ask, so it
@@ -17,19 +18,8 @@ afterEach(async () => {
   await removeTempDirectories();
 });
 
-/** An instance's directory, with the config file the test wants in it. */
-async function instanceWith(settings: unknown): Promise<string> {
-  const directory = await createTempDirectory("supervisor-config-");
-  await writeFile(join(directory, CONFIG_FILENAME), JSON.stringify(settings, null, 2), "utf8");
-  return directory;
-}
-
-async function withoutConfigFile(): Promise<string> {
-  return createTempDirectory("supervisor-config-");
-}
-
 test("an instance with no config file to read keeps every default", async () => {
-  const config = loadSupervisorConfig({ cwd: await withoutConfigFile(), env: {} });
+  const config = loadSupervisorConfig({ cwd: await instanceWithoutConfigFile(), env: {} });
 
   expect(config).toEqual({
     dataDir: "./data",
@@ -50,7 +40,11 @@ test("the file carries every setting, so a run needs nothing but a start", async
     logLevel: "debug",
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
     source: { type: "local", directory: "./tickets" },
-    project: { directory: "./app", verify: ["npm run typecheck", "npm test"] },
+    project: {
+      directory: "./app",
+      verify: ["npm run typecheck", "npm test"],
+      pushCheckpoints: false,
+    },
   });
 
   const config = loadSupervisorConfig({ cwd, env: {} });
@@ -65,6 +59,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
       sourceDirectory: join(cwd, "tickets"),
       projectDirectory: join(cwd, "app"),
       verify: ["npm run typecheck", "npm test"],
+      pushCheckpoints: false,
     },
   });
 });
@@ -73,7 +68,7 @@ test("a directory is read against the file, not against wherever the service sta
   const elsewhere = await instanceWith({ source: { type: "local", directory: "./tickets" } });
 
   const config = loadSupervisorConfig({
-    cwd: await withoutConfigFile(),
+    cwd: await instanceWithoutConfigFile(),
     env: { SUPERVISOR_CONFIG: join(elsewhere, CONFIG_FILENAME) },
   });
 
@@ -114,7 +109,7 @@ test("an environment variable set to nothing is not a setting at all", async () 
 });
 
 test("a config file the instance was pointed at explicitly has to be there", async () => {
-  const missing = join(await withoutConfigFile(), "elsewhere.json");
+  const missing = join(await instanceWithoutConfigFile(), "elsewhere.json");
 
   expect(() => loadSupervisorConfig({ cwd: ".", env: { SUPERVISOR_CONFIG: missing } })).toThrow(
     missing,
@@ -122,7 +117,7 @@ test("a config file the instance was pointed at explicitly has to be there", asy
 });
 
 test("a config file that is not JSON is refused by name", async () => {
-  const cwd = await withoutConfigFile();
+  const cwd = await instanceWithoutConfigFile();
   await writeFile(join(cwd, CONFIG_FILENAME), "{ port: 4317 }", "utf8");
 
   expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(CONFIG_FILENAME);
@@ -169,6 +164,13 @@ test("verification that could never refuse an Attempt is refused itself", async 
 
   const blank = await instanceWith({ project: { directory: "./app", verify: ["  "] } });
   expect(() => loadSupervisorConfig({ cwd: blank, env: {} })).toThrow(/verify/);
+});
+
+test("pushing is a switch, so a setting that only looks like one is refused", async () => {
+  // `"false"` in quotes would be truthy, and the project would push all night.
+  const cwd = await instanceWith({ project: { directory: "./app", pushCheckpoints: "false" } });
+
+  expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/pushCheckpoints/);
 });
 
 test("a project may name its directory and leave verification to the start request", async () => {

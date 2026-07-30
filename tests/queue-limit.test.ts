@@ -1,11 +1,10 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { createTestProject, type TestProject } from "./helpers/project.js";
+import { createTestProject } from "./helpers/project.js";
 import { readAttempts, startRun, stateOf, ticketOf, waitForQueue } from "./helpers/queue.js";
-import { fakeRunner, type FakeRunnerBehaviour } from "./helpers/runner.js";
+import { fakeRunner, stoppedByTheLimit } from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
 import { removeTempDirectories } from "./helpers/temp-dir.js";
 import { ticketFile } from "./helpers/ticket-files.js";
@@ -19,21 +18,6 @@ afterEach(async () => {
 });
 
 const RESET_AT = new Date("2026-07-30T06:30:00.000Z");
-
-/**
- * A Run cut off by the subscription's usage limit half-way through: it had
- * committed something and left more lying about when the quota refused it.
- */
-function stoppedByTheLimit(project: TestProject, resetAt: Date | null): FakeRunnerBehaviour {
-  return async (request) => {
-    const id = request.ticket.id;
-    await writeFile(join(project.directory, `${id}-half.txt`), "half-written", "utf8");
-    await project.git("add", "-A");
-    await project.git("commit", "-m", `Half of ${id}`);
-    await writeFile(join(project.directory, `${id}-scratch.txt`), "left behind", "utf8");
-    return { status: "limit-hit", resetAt, output: "Working on it, then the quota ran out." };
-  };
-}
 
 test("a usage limit stops the run without holding it against the ticket", async () => {
   const project = await createTestProject({

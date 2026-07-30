@@ -49,6 +49,8 @@ export interface QueueRun {
   tickets: TicketRun[];
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
+  /** Why Checkpoints are not reaching the remote, while they are not. */
+  pushFailure: string | null;
 }
 
 /** The repository a run works in, and what it takes for work in it to count. */
@@ -56,6 +58,8 @@ export interface Project {
   directory: string;
   /** Commands that must all exit 0 for an Attempt to count as succeeded. */
   verify: string[];
+  /** Whether each Checkpoint is published; off for a project with no remote. */
+  pushCheckpoints: boolean;
 }
 
 export interface QueueRunRequest {
@@ -151,6 +155,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       state: "running",
       tickets: queued.map((item) => item.entry),
       error: null,
+      pushFailure: null,
     };
     run = started;
 
@@ -261,6 +266,30 @@ async function attempt(queued: Queued, context: RunContext): Promise<void> {
   entry.checkpoint = swept ?? (await context.repository.headCommit());
   context.restorePoint = entry.checkpoint;
   entry.state = "succeeded";
+
+  // Last, once the ticket has finished being a ticket: the Checkpoint goes out
+  // before the next ticket is attempted, so the remote is never more than one
+  // ticket behind the work.
+  await pushCheckpoint(context);
+}
+
+/**
+ * Sends the branch out to where the night's progress can be followed from a phone.
+ * Pushing is no part of Verification: the ticket passed its checks and has
+ * succeeded, so a remote that will not take the commit is a problem with the
+ * remote — said so on the run, and the run goes on.
+ */
+async function pushCheckpoint(context: RunContext): Promise<void> {
+  if (!context.project.pushCheckpoints) return;
+
+  try {
+    await context.repository.push(context.run.branch);
+    // A push carries everything before it, so whatever an earlier one could not
+    // deliver has just arrived: there is nothing left to warn about.
+    context.run.pushFailure = null;
+  } catch (error) {
+    context.run.pushFailure = messageOf(error);
+  }
 }
 
 /**

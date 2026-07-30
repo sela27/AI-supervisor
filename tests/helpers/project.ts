@@ -23,6 +23,17 @@ export interface TestProject {
   read(relativePath: string): Promise<string>;
 }
 
+/**
+ * A bare repository standing in for the remote a run publishes its branch to.
+ * Local, so a test can read exactly what reached it without a network in sight.
+ */
+export interface TestRemote {
+  directory: string;
+  /** The branches that actually arrived — none, until something is pushed. */
+  branches(): Promise<string[]>;
+  commitSubjects(branch: string): Promise<string[]>;
+}
+
 const TICKETS_DIRECTORY = "tickets";
 
 export async function createTestProject(tickets: Record<string, string>): Promise<TestProject> {
@@ -56,5 +67,26 @@ export async function createTestProject(tickets: Record<string, string>): Promis
     currentBranch: () => git("rev-parse", "--abbrev-ref", "HEAD"),
     commitSubjects: async (ref = "HEAD") => (await git("log", "--format=%s", ref)).split("\n"),
     read: (relativePath) => readFile(join(directory, relativePath), "utf8"),
+  };
+}
+
+/** Gives the project an `origin` to push to, and hands back what is on the other end. */
+export async function giveRemote(project: TestProject): Promise<TestRemote> {
+  const directory = await createTempDirectory("supervisor-remote-");
+  const bare = async (...args: string[]): Promise<string> => {
+    const { stdout } = await execFileAsync("git", args, { cwd: directory });
+    return stdout.trim();
+  };
+
+  await bare("init", "--bare");
+  await project.git("remote", "add", "origin", directory);
+
+  return {
+    directory,
+    branches: async () => {
+      const refs = await bare("for-each-ref", "--format=%(refname:short)", "refs/heads");
+      return refs === "" ? [] : refs.split("\n");
+    },
+    commitSubjects: async (branch) => (await bare("log", "--format=%s", branch)).split("\n"),
   };
 }

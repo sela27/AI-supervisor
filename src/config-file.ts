@@ -18,6 +18,7 @@ export interface QueueRunDefaults {
   sourceDirectory?: string;
   projectDirectory?: string;
   verify?: string[];
+  pushCheckpoints?: boolean;
 }
 
 /** The file's say on each setting — everything it did not mention is left out. */
@@ -34,7 +35,7 @@ export interface FileSettings {
 const FILE_SETTINGS = ["dataDir", "port", "host", "logLevel", "runner", "source", "project"];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
 const SOURCE_SETTINGS = ["type", "directory"];
-const PROJECT_SETTINGS = ["directory", "verify"];
+const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
 
 export const HIGHEST_PORT = 65_535;
 
@@ -88,6 +89,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const sourceDirectory = directory(path, source.directory, "source.directory");
   const projectDirectory = directory(path, project.directory, "project.directory");
   const verify = commands(path, project.verify);
+  const pushCheckpoints = flag(path, project.pushCheckpoints, "project.pushCheckpoints");
 
   return {
     ...(dataDir === undefined ? {} : { dataDir }),
@@ -100,6 +102,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
       ...(sourceDirectory === undefined ? {} : { sourceDirectory }),
       ...(projectDirectory === undefined ? {} : { projectDirectory }),
       ...(verify === undefined ? {} : { verify }),
+      ...(pushCheckpoints === undefined ? {} : { pushCheckpoints }),
     },
   };
 }
@@ -157,6 +160,19 @@ function text(path: string, value: unknown, name: string): string | undefined {
 function directory(path: string, value: unknown, name: string): string | undefined {
   const written = text(path, value, name);
   return written === undefined ? undefined : resolve(dirname(path), written);
+}
+
+/**
+ * A setting that is only ever on or off. `"false"` in quotes is a string, and a
+ * string is not a switch — a project that meant to stop pushing would go on
+ * pushing all night.
+ */
+function flag(path: string, value: unknown, name: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(`${setting(path, name)} must be true or false, got ${quote(value)}`);
+  }
+  return value;
 }
 
 function commands(path: string, value: unknown): string[] | undefined {

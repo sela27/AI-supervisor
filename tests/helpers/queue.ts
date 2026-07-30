@@ -10,6 +10,8 @@ export interface QueueBody {
   state: string;
   /** Why the run itself stopped, when something other than a ticket stopped it. */
   error: string | null;
+  /** Why Checkpoints are not reaching the remote, when they are not. */
+  pushFailure: string | null;
   tickets: {
     id: string;
     title: string;
@@ -39,24 +41,38 @@ export function requestStart(
   project: TestProject,
   options: StartOptions = {},
 ): Promise<Response> {
+  return post(running, startBody(project, options));
+}
+
+export function startRun(
+  running: TestSupervisor,
+  project: TestProject,
+  options: StartOptions = {},
+): Promise<QueueBody> {
+  return startRunWith(running, startBody(project, options));
+}
+
+/** Starts a run from exactly the body given, however little it says for itself. */
+export async function startRunWith(running: TestSupervisor, body: unknown): Promise<QueueBody> {
+  const response = await post(running, body);
+  expect(response.status).toBe(202);
+  return (await response.json()) as QueueBody;
+}
+
+/** Everything a run needs, spelled out — what a test says unless it says otherwise. */
+function startBody(project: TestProject, options: StartOptions): unknown {
+  return {
+    source: { type: "local", directory: options.source ?? project.ticketsDirectory },
+    project: { directory: project.directory, verify: options.verify ?? ["exit 0"] },
+  };
+}
+
+function post(running: TestSupervisor, body: unknown): Promise<Response> {
   return running.request("/api/queue/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      source: { type: "local", directory: options.source ?? project.ticketsDirectory },
-      project: { directory: project.directory, verify: options.verify ?? ["exit 0"] },
-    }),
+    body: JSON.stringify(body),
   });
-}
-
-export async function startRun(
-  running: TestSupervisor,
-  project: TestProject,
-  options?: StartOptions,
-): Promise<QueueBody> {
-  const response = await requestStart(running, project, options);
-  expect(response.status).toBe(202);
-  return (await response.json()) as QueueBody;
 }
 
 export async function readQueue(running: TestSupervisor): Promise<QueueBody> {
@@ -124,6 +140,13 @@ async function poll<T>(
 
 export function ticketOf(queue: QueueBody, id: string): QueueBody["tickets"][number] | undefined {
   return queue.tickets.find((ticket) => ticket.id === id);
+}
+
+/** The branch a started run is on — unlike the idle queue, it always has one. */
+export function runBranch(queue: QueueBody): string {
+  const { branch } = queue;
+  if (branch === null) throw new Error(`This queue is on no branch: ${JSON.stringify(queue)}`);
+  return branch;
 }
 
 export function stateOf(queue: QueueBody, id: string): string | undefined {
