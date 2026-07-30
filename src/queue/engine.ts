@@ -1,5 +1,5 @@
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
-import type { RunOutcome, Runner } from "../runner/runner.js";
+import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { Storage } from "../storage.js";
 import {
   discoverLocalTickets,
@@ -8,11 +8,15 @@ import {
 } from "../tickets/local-source.js";
 import type { Ticket } from "../tickets/ticket.js";
 import { verify } from "../verification/verifier.js";
-import { QueueRunInProgressError } from "./errors.js";
+import { QueueRunInProgressError, UsageLimitError } from "./errors.js";
 import { previewQueue } from "./preview.js";
 
-/** `failed` is the run itself breaking down — a ticket failing still completes the run. */
-export type QueueRunState = "running" | "completed" | "failed";
+/**
+ * `failed` is the run itself breaking down — a ticket failing still completes the
+ * run. `paused-on-limit` is the usage limit stopping it, which is not a failure
+ * of anything; the run is picked up again once the limit has lifted.
+ */
+export type QueueRunState = "running" | "completed" | "failed" | "paused-on-limit";
 
 /**
  * `done` — the Ticket Source already reported it finished, so it is never run.
@@ -64,6 +68,17 @@ export interface QueueEngine {
   start(request: QueueRunRequest): Promise<QueueRun>;
   /** The run in progress, or the last one that finished. */
   current(): QueueRun | undefined;
+  /**
+   * What the Attempt in flight has printed so far — the only view of a Run while
+   * it is still going. Empty for any ticket but the one being attempted.
+   */
+  liveOutput(ticketId: string): string;
+}
+
+/** The Attempt being watched: whose it is, and what it has printed so far. */
+interface LiveOutput {
+  ticketId: string | null;
+  lines: string[];
 }
 
 /** One queued ticket: what the run says about it, and the ticket it was read from. */
@@ -78,6 +93,7 @@ interface RunContext extends QueueRunRequest {
   runner: Runner;
   storage: Storage;
   queued: Queued[];
+  live: LiveOutput;
   /**
    * Where a failed Attempt is thrown back to: this run's last Checkpoint, or the
    * commit recording the last failure, whichever came later. Never an Attempt's
@@ -94,6 +110,9 @@ export interface QueueEngineDependencies {
 
 export function createQueueEngine(dependencies: QueueEngineDependencies): QueueEngine {
   let run: QueueRun | undefined;
+  // Kept out of the run's own state: it is written line by line as a Run talks,
+  // and it must not be copied into every snapshot the API hands out.
+  const live: LiveOutput = { ticketId: null, lines: [] };
   // Starting takes several awaits; this closes the window in which a second
   // start could slip past the check and put two runs on the same repository.
   let starting = false;
@@ -141,6 +160,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       runner: dependencies.runner,
       storage: dependencies.storage,
       queued,
+      live,
       restorePoint: await repository.headCommit(),
     });
 
@@ -149,6 +169,8 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
 
   return {
     current: () => (run ? snapshot(run) : undefined),
+
+    liveOutput: (ticketId) => (live.ticketId === ticketId ? live.lines.join("\n") : ""),
 
     start: async (request) => {
       if (starting || run?.state === "running") {
@@ -181,10 +203,11 @@ async function execute(context: RunContext): Promise<void> {
     }
     context.run.state = "completed";
   } catch (error) {
-    // The run itself broke down — the repository moved under it, the source went
-    // away. Whatever the tickets say, this queue did not complete.
     context.run.error = error instanceof Error ? error.message : String(error);
-    context.run.state = "failed";
+    // A usage limit is not a breakdown: nothing is wrong, there is just no quota
+    // left to spend. Everything else — the repository moving under the run, the
+    // source going away — means this queue did not complete.
+    context.run.state = error instanceof UsageLimitError ? "paused-on-limit" : "failed";
   }
 }
 
@@ -197,10 +220,21 @@ async function attempt(queued: Queued, context: RunContext): Promise<void> {
   entry.state = "running";
 
   const before = await context.repository.headCommit();
+  // The Attempt in flight becomes the one being watched; the last one's output
+  // stands until then, so a watcher never finds an empty log mid-handover.
+  context.live.ticketId = ticket.id;
+  context.live.lines = [];
+
   const outcome = await context.runner.run({
     ticket,
     projectDirectory: context.project.directory,
+    onOutput: (chunk) => context.live.lines.push(chunk),
   });
+
+  if (outcome.status === "limit-hit") {
+    await discardOnLimit(queued, outcome, context);
+    return;
+  }
 
   const refusal = await verificationRefusal(outcome, before, context);
   // The log is written down before anything else, because the reset that follows
@@ -228,6 +262,42 @@ async function attempt(queued: Queued, context: RunContext): Promise<void> {
   entry.state = "succeeded";
 }
 
+/**
+ * A usage limit is not the ticket's doing, so nothing is held against it: the
+ * half-finished Attempt is thrown back like any other, but the ticket goes back
+ * on the Frontier untouched and nothing is written to the Ticket Source.
+ *
+ * The queue then stops at Paused-on-limit. Waiting the limit out and picking the
+ * run up again by itself is not built yet, so for now the wait is the user's —
+ * but a limit is never allowed to read as a ticket that failed.
+ */
+async function discardOnLimit(
+  queued: Queued,
+  outcome: Extract<RunOutcome, { status: "limit-hit" }>,
+  context: RunContext,
+): Promise<void> {
+  context.storage.recordAttempt({
+    runId: context.run.id,
+    ticketId: queued.ticket.id,
+    outcome: "limit-hit",
+    failure: null,
+    output: outcome.output,
+  });
+
+  await context.repository.resetTo(context.restorePoint);
+  queued.entry.state = "pending";
+
+  throw new UsageLimitError(
+    `the subscription's usage limit stopped the run${liftsAt(outcome.resetAt)}. ` +
+      `${queued.ticket.id} was not attempted; start the run again once the limit has lifted.`,
+    outcome.resetAt,
+  );
+}
+
+function liftsAt(resetAt: Date | null): string {
+  return resetAt === null ? "" : `, and lifts at ${resetAt.toISOString()}`;
+}
+
 /** Why Verification refused an Attempt, and what the refusing check printed. */
 interface Refusal {
   reason: string;
@@ -239,7 +309,7 @@ interface Refusal {
  * nothing to what the Run said about itself. Nothing back means the Attempt stands.
  */
 async function verificationRefusal(
-  outcome: RunOutcome,
+  outcome: SettledRun,
   before: string,
   context: RunContext,
 ): Promise<Refusal | undefined> {

@@ -37,6 +37,16 @@ export function registerQueueRunRoutes(
     },
   );
 
+  // The Attempt in flight, as it happens: the log is only complete once the
+  // Attempt has ended, and by then the Run may have been going for an hour.
+  app.get<{ Params: { ticketId: string } }>(
+    "/api/queue/tickets/:ticketId/output",
+    async (request) => ({
+      ticketId: request.params.ticketId,
+      output: engine.liveOutput(request.params.ticketId),
+    }),
+  );
+
   app.post("/api/queue/start", async (request, reply) => {
     const source = readSourceSelection(request.body);
     if (!source.ok) return sendError(reply, badRequest(source.message));

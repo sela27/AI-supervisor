@@ -1,10 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
 
+/**
+ * How an Attempt ended. `limit-hit` is neither of the others: the usage limit cut
+ * the Run short, so the ticket was never settled either way.
+ */
+export type AttemptOutcome = "succeeded" | "failed" | "limit-hit";
+
 /** One Attempt as Verification left it, with everything the Run printed. */
 export interface AttemptRecord {
   runId: string;
   ticketId: string;
-  outcome: "succeeded" | "failed";
+  outcome: AttemptOutcome;
   /** Why the Supervisor refused it, when it did. */
   failure: string | null;
   output: string;
@@ -106,7 +112,7 @@ export function openStorage(file: string): Storage {
       return rows.map((row) => ({
         runId,
         ticketId: row.ticket_id,
-        outcome: row.outcome === "succeeded" ? "succeeded" : "failed",
+        outcome: outcomeOf(row.outcome),
         failure: row.failure,
         output: row.output,
         recordedAt: row.recorded_at,
@@ -115,6 +121,17 @@ export function openStorage(file: string): Storage {
 
     close: () => db.close(),
   };
+}
+
+/** Anything the column holds that this build does not recognise did not succeed. */
+function outcomeOf(stored: string): AttemptOutcome {
+  switch (stored) {
+    case "succeeded":
+    case "limit-hit":
+      return stored;
+    default:
+      return "failed";
+  }
 }
 
 function migrate(db: DatabaseSync): void {

@@ -5,11 +5,13 @@ import { afterEach, expect, test } from "vitest";
 import { createTestProject } from "./helpers/project.js";
 import {
   createGate,
+  readLiveOutput,
   readQueue,
   requestStart,
   startRun,
   stateOf,
   ticketOf,
+  waitForLiveOutput,
   waitForQueue,
 } from "./helpers/queue.js";
 import { commitsWork, fakeRunner } from "./helpers/runner.js";
@@ -121,6 +123,38 @@ test("tickets run strictly one at a time, in dependency order", async () => {
 
   expect(runner.overlapped).toBe(false);
   expect(runner.order).toEqual(["01-boot-the-app", "02-add-search", "03-write-docs"]);
+});
+
+test("the Attempt in flight can be watched while it is still printing", async () => {
+  const project = await createTestProject({
+    "01-boot-the-app.md": ticketFile({ title: "01 — Boot the app" }),
+  });
+  const gate = createGate();
+  const work = commitsWork(project);
+  const runner = fakeRunner(async (request) => {
+    request.onOutput?.("Reading the ticket.");
+    request.onOutput?.("· Edit: src/main.ts");
+    await gate.opened;
+    await work(request);
+  });
+  supervisor = await startTestSupervisor({ runner });
+
+  await startRun(supervisor, project);
+  // The Run is held at the gate, so everything read here is read mid-Attempt —
+  // long before the log the Attempt will eventually be filed under exists.
+  const watched = await waitForLiveOutput(
+    supervisor,
+    "01-boot-the-app",
+    (output) => output !== "",
+  );
+  expect(watched).toBe("Reading the ticket.\n· Edit: src/main.ts");
+  expect(stateOf(await readQueue(supervisor), "01-boot-the-app")).toBe("running");
+
+  // Only the ticket being attempted has anything to watch.
+  expect(await readLiveOutput(supervisor, "02-add-search")).toBe("");
+
+  gate.open();
+  await waitForQueue(supervisor, (queue) => queue.state === "completed");
 });
 
 test("an attempt whose verification command fails does not succeed", async () => {

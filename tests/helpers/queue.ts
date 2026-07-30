@@ -8,6 +8,8 @@ export interface QueueBody {
   id: string | null;
   branch: string | null;
   state: string;
+  /** Why the run itself stopped, when something other than a ticket stopped it. */
+  error: string | null;
   tickets: {
     id: string;
     title: string;
@@ -75,17 +77,46 @@ export async function readAttempts(
   return (await response.json()) as AttemptBody[];
 }
 
+/** What the Attempt in flight has printed so far, as a watcher would see it. */
+export async function readLiveOutput(
+  running: TestSupervisor,
+  ticketId: string,
+): Promise<string> {
+  const response = await running.request(
+    `/api/queue/tickets/${encodeURIComponent(ticketId)}/output`,
+  );
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { output: string }).output;
+}
+
 /** Polls the API — the only way a test watches a run — until the queue looks right. */
-export async function waitForQueue(
+export function waitForQueue(
   running: TestSupervisor,
   matches: (queue: QueueBody) => boolean,
 ): Promise<QueueBody> {
+  return poll("queue", () => readQueue(running), matches);
+}
+
+/** Polls until the Attempt in flight has printed what the test is waiting for. */
+export function waitForLiveOutput(
+  running: TestSupervisor,
+  ticketId: string,
+  matches: (output: string) => boolean,
+): Promise<string> {
+  return poll(`output of ${ticketId}`, () => readLiveOutput(running, ticketId), matches);
+}
+
+async function poll<T>(
+  what: string,
+  read: () => Promise<T>,
+  matches: (value: T) => boolean,
+): Promise<T> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const queue = await readQueue(running);
-    if (matches(queue)) return queue;
+    const value = await read();
+    if (matches(value)) return value;
     if (Date.now() > deadline) {
-      throw new Error(`The queue never got there; it last looked like ${JSON.stringify(queue)}`);
+      throw new Error(`The ${what} never got there; it last looked like ${JSON.stringify(value)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

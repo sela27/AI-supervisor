@@ -4,6 +4,8 @@ import type { Ticket } from "../tickets/ticket.js";
 export interface RunRequest {
   ticket: Ticket;
   projectDirectory: string;
+  /** Handed each line of output as it arrives, for watching a Run as it happens. */
+  onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -12,10 +14,18 @@ export interface RunRequest {
  * whether the Attempt actually succeeded. The output it keeps either way: a
  * failed Attempt's work is thrown back to the last Checkpoint, so the log is all
  * that is left to read afterwards.
+ *
+ * `limit-hit` is neither of the other two: the subscription's usage limit stopped
+ * the Run before it could settle the ticket, so nothing has been learned about
+ * the ticket at all. `resetAt` is when the limit lifts, when the Run could say.
  */
 export type RunOutcome =
   | { status: "succeeded"; output: string }
-  | { status: "failed"; reason: string; output: string };
+  | { status: "failed"; reason: string; output: string }
+  | { status: "limit-hit"; resetAt: Date | null; output: string };
+
+/** A Run that got far enough to say something about the ticket itself. */
+export type SettledRun = Exclude<RunOutcome, { status: "limit-hit" }>;
 
 /** Executes exactly one Attempt: a single headless Claude Code Run for one ticket. */
 export interface Runner {

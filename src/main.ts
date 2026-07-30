@@ -1,11 +1,16 @@
 import { loadSupervisorConfig } from "./config.js";
+import { claudeCodeRunner } from "./runner/claude-code.js";
 import { startSupervisor } from "./supervisor.js";
 
 const config = loadSupervisorConfig();
 
 const supervisor = await startSupervisor({
-  ...config,
+  dataDir: config.dataDir,
+  port: config.port,
+  host: config.host,
   logger: { level: config.logLevel },
+  // The one place a real Claude Code Run is ever launched from.
+  runner: claudeCodeRunner(config.runner),
 });
 
 console.log(`Supervisor listening on ${supervisor.url} (data: ${config.dataDir})`);

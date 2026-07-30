@@ -21,12 +21,16 @@ npm run dev
 
 The service listens on `http://localhost:4317` by default and answers `GET /api/health`.
 
-| Variable               | Default   | Meaning                          |
-| ---------------------- | --------- | -------------------------------- |
-| `SUPERVISOR_DATA_DIR`  | `./data`  | Where the SQLite database lives  |
-| `SUPERVISOR_PORT`      | `4317`    | HTTP port (`0` picks a free one) |
-| `SUPERVISOR_HOST`      | `0.0.0.0` | Bind address                     |
-| `SUPERVISOR_LOG_LEVEL` | `info`    | Fastify/pino log level           |
+| Variable                      | Default             | Meaning                                   |
+| ----------------------------- | ------------------- | ----------------------------------------- |
+| `SUPERVISOR_DATA_DIR`         | `./data`            | Where the SQLite database lives           |
+| `SUPERVISOR_PORT`             | `4317`              | HTTP port (`0` picks a free one)          |
+| `SUPERVISOR_HOST`             | `0.0.0.0`           | Bind address                              |
+| `SUPERVISOR_LOG_LEVEL`        | `info`              | Fastify/pino log level                    |
+| `SUPERVISOR_MODEL`            | the CLI's own       | Model each Run uses                       |
+| `SUPERVISOR_PERMISSION_MODE`  | `bypassPermissions` | How much a Run may do without being asked |
+
+Both Runner settings are per instance — one Supervisor, one project, one model.
 
 ## Previewing a queue
 
@@ -74,7 +78,8 @@ Supervisor creates the run's branch with `git checkout -b` and leaves the projec
 the run ends, so the branch is there to review.
 
 The reply carries the run's id and branch. `GET /api/queue` reports the queue's state
-(`idle`, `running`, `completed`, or `failed` when the run itself broke down) and every
+(`idle`, `running`, `completed`, `paused-on-limit`, or `failed` when the run itself broke
+down) and every
 ticket's state (`pending`, `running`, `succeeded`, `failed`, `skipped`, or `done` when the
 source already reported it finished), so a run can be watched from the moment it starts.
 Tickets run strictly one at a time, and so do runs: starting a second while one is under way
@@ -89,6 +94,41 @@ ticket.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
+
+## How a ticket is run
+
+Each ticket is one fresh headless Claude Code Run, launched through the Claude Agent SDK in
+the project directory. Nothing carries over between tickets — a fresh context per Run is the
+design, not an accident. The Run is given the ticket's title and acceptance criteria and told
+three things: commit the work, do not push, and leave the ticket's own file alone (the
+Supervisor writes the outcome back itself).
+
+Runs need Claude Code's own credentials to be present wherever the Supervisor is running.
+Because it runs unattended, permissions default to `bypassPermissions` — a Run that stops to
+ask a question is a Run that never finishes. Narrow that with `SUPERVISOR_PERMISSION_MODE`
+if the Supervisor is not confined to a container that can only see the project.
+
+An Attempt's log is only complete once the Attempt has ended, and by then the Run may have
+been going an hour. What it has printed so far is readable throughout:
+
+```bash
+curl localhost:4317/api/queue/tickets/01-boot-the-app/output
+```
+
+That answers the ticket being attempted right now; any other ticket answers nothing, and the
+finished Attempt's whole log is filed under `/attempts` below.
+
+## When a usage limit is hit
+
+A usage limit is not a ticket failure and is never recorded as one. The interrupted Attempt
+is discarded back to the last Checkpoint, the ticket is left exactly as it was found — no
+write-back, no skipped dependents, nothing held against it — and the queue enters
+`paused-on-limit`, naming the limit and the time it lifts (when Claude reported one) in its
+`error` field.
+
+Waiting the limit out and picking the run up automatically is not built yet, so for now the
+wait is yours: start the run again once the limit has lifted and it carries on from the
+Checkpoints already on the branch.
 
 ## When a ticket fails
 
@@ -115,8 +155,9 @@ curl localhost:4317/api/queue/tickets/01-boot-the-app/attempts
 ```
 
 That answers every Attempt the current run made on the ticket, oldest first, each with its
-outcome, its failure summary, and the full output — the Run's own, plus whatever the
-verification command printed when it was a `verify` command that refused the Attempt.
+outcome (`succeeded`, `failed`, or `limit-hit`), its failure summary, and the full output —
+the Run's own transcript, plus whatever the verification command printed when it was a
+`verify` command that refused the Attempt.
 
 ## Checks
 

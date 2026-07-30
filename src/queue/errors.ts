@@ -8,3 +8,19 @@ export class QueueRunInProgressError extends Error {
     this.name = "QueueRunInProgressError";
   }
 }
+
+/**
+ * The subscription's usage limit stopped a Run. Not a breakdown and not a ticket
+ * failure — it unwinds the run the same way an error would, but the queue reads
+ * it as Paused-on-limit rather than as anything having gone wrong.
+ */
+export class UsageLimitError extends Error {
+  /** When the limit lifts, when the Run could say. */
+  readonly resetAt: Date | null;
+
+  constructor(message: string, resetAt: Date | null) {
+    super(message);
+    this.name = "UsageLimitError";
+    this.resetAt = resetAt;
+  }
+}
