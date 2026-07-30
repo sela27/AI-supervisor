@@ -2,7 +2,9 @@
  * The dashboard in the browser: it opens one event stream and never asks for the
  * queue again. Everything on the page but a ticket's own attempt history arrives
  * pushed, so the page is right whether it was opened before the run started or at
- * 3am halfway through it.
+ * 3am halfway through it. The controls send and say nothing back — what a control
+ * did to the run comes back down the same stream as everything else, so every
+ * dashboard that is open agrees about what happened.
  *
  * Plain browser JavaScript on purpose. The Supervisor ships as one compiled file
  * and a bundler for a single page would be a build step nobody asked for — the
@@ -13,13 +15,48 @@
 export const DASHBOARD_SCRIPT = String.raw`
 (function () {
   const byId = function (id) { return document.getElementById(id); };
-  const queueState = byId("queue-state");
+  const statePill = byId("queue-state");
+  const instruction = byId("instruction");
   const branch = byId("branch");
   const notice = byId("notice");
   const offline = byId("offline");
+  const refused = byId("refused");
   const list = byId("tickets");
   const liveTitle = byId("live-title");
   const live = byId("live");
+  const pause = byId("pause");
+  const resume = byId("resume");
+  const stop = byId("stop");
+
+  /** What the run says it is on its way to doing, in words rather than a verb. */
+  const ON_ITS_WAY = {
+    pause: "pausing after this ticket",
+    stop: "stopping after this ticket"
+  };
+
+  pause.addEventListener("click", function () { send("/api/queue/pause"); });
+  resume.addEventListener("click", function () { send("/api/queue/resume"); });
+  stop.addEventListener("click", function () { send("/api/queue/stop"); });
+
+  /**
+   * Gives the run a control. Nothing is done with what comes back when it works:
+   * the change reaches this page the same way it reaches every other one open.
+   * A refusal is the reader's to see, since they are the one who asked.
+   */
+  function send(path) {
+    refused.hidden = true;
+    fetch(path, { method: "POST" })
+      .then(function (response) {
+        if (response.ok) return null;
+        return response.json().then(function (body) {
+          throw new Error(body.error || "The Supervisor refused that");
+        });
+      })
+      .catch(function (error) {
+        refused.textContent = error.message;
+        refused.hidden = false;
+      });
+  }
 
   /**
    * What the page knows about each ticket beyond what the queue says: whether the
@@ -29,6 +66,12 @@ export const DASHBOARD_SCRIPT = String.raw`
    */
   const readers = new Map();
   let tickets = [];
+  /**
+   * The run's own state, kept because a ticket's controls belong to the run as
+   * much as to the ticket: a stopped run runs nothing again, whatever its tickets
+   * are still reported as.
+   */
+  let queueState = "idle";
 
   const stream = new EventSource("/api/events");
   stream.addEventListener("open", function () { offline.hidden = true; });
@@ -49,9 +92,16 @@ export const DASHBOARD_SCRIPT = String.raw`
   function stamp(ticket) { return ticket.state + ":" + ticket.attempts; }
 
   function showQueue(queue) {
-    queueState.textContent = queue.state;
-    queueState.dataset.state = queue.state;
+    queueState = queue.state;
+    statePill.textContent = queue.state;
+    statePill.dataset.state = queue.state;
+    // The one thing the start panel goes on: whether there is a run to stay out
+    // of the way of.
+    document.body.dataset.queueState = queue.state;
     branch.textContent = queue.branch === null ? "no run yet" : queue.branch;
+
+    instruction.textContent = ON_ITS_WAY[queue.instruction] || "";
+    instruction.hidden = !queue.instruction;
 
     // The run breaking down and the remote refusing the branch are different
     // troubles, and both are things the reader has to be told about.
@@ -59,15 +109,37 @@ export const DASHBOARD_SCRIPT = String.raw`
     notice.textContent = trouble || "";
     notice.hidden = !trouble;
 
+    showControls(queue);
+
     tickets = queue.tickets;
     showTickets();
+  }
+
+  /**
+   * Only the controls the run would actually obey. A button that answers "this
+   * run is completed, so there is nothing to pause" is a button that should not
+   * have been there to press.
+   */
+  function showControls(queue) {
+    const running = queue.state === "running";
+    // A run the user paused and one the usage limit paused are picked up the
+    // same way; only the reason they stopped differs.
+    const held = queue.state === "paused" || queue.state === "paused-on-limit";
+    // Asking again for what has already been asked for does nothing, so it is
+    // not offered — but taking a pause back before it lands is a real thing to want.
+    const pausing = running && queue.instruction === "pause";
+
+    pause.hidden = !running || queue.instruction !== null;
+    resume.hidden = !(held || pausing);
+    resume.textContent = pausing ? "Cancel pause" : "Resume";
+    stop.hidden = !(held || (running && queue.instruction !== "stop"));
   }
 
   function showTickets() {
     // The list is rebuilt whenever the queue moves, which would otherwise drop the
     // keyboard wherever it was standing — mid-run, that happens under the reader.
     const wasOn = document.activeElement && document.activeElement.dataset
-      ? document.activeElement.dataset.ticket
+      ? document.activeElement.dataset.focus
       : undefined;
 
     if (tickets.length === 0) {
@@ -77,7 +149,7 @@ export const DASHBOARD_SCRIPT = String.raw`
     }
 
     if (wasOn) {
-      const again = list.querySelector('.ticket-head[data-ticket="' + CSS.escape(wasOn) + '"]');
+      const again = list.querySelector('[data-focus="' + CSS.escape(wasOn) + '"]');
       if (again) again.focus({ preventScroll: true });
     }
 
@@ -99,7 +171,7 @@ export const DASHBOARD_SCRIPT = String.raw`
     const head = document.createElement("button");
     head.type = "button";
     head.className = "ticket-head";
-    head.dataset.ticket = ticket.id;
+    head.dataset.focus = ticket.id;
     head.setAttribute("aria-expanded", String(reader.open));
     head.addEventListener("click", function () { toggle(ticket.id); });
     head.append(
@@ -110,8 +182,27 @@ export const DASHBOARD_SCRIPT = String.raw`
     item.append(head);
 
     if (ticket.failure) item.append(element("p", "failure", ticket.failure));
+    // A ticket that failed is the one worth another go; one still waiting is the
+    // only one that can still be called off. Neither is offered on a run that has
+    // been stopped, which is over and runs nothing again.
+    if (queueState !== "stopped") {
+      if (ticket.state === "failed") item.append(ticketControl(ticket, "retry", "Run it again"));
+      if (ticket.state === "pending") item.append(ticketControl(ticket, "skip", "Take it out"));
+    }
     if (reader.open) item.append(attemptsBox(ticket));
     return item;
+  }
+
+  function ticketControl(ticket, control, label) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "control ticket-control";
+    button.dataset.focus = ticket.id + ":" + control;
+    button.textContent = label;
+    button.addEventListener("click", function () {
+      send("/api/queue/tickets/" + encodeURIComponent(ticket.id) + "/" + control);
+    });
+    return button;
   }
 
   /** A ticket on its second go says so, since that is the interesting one. */

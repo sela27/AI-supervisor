@@ -95,6 +95,24 @@ curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json
 An instance whose config file already names its source needs none of that — `-d '{}'` previews
 the queue it was configured with.
 
+The queue is editable before it runs. A `queue` field leaves tickets out and puts them in the
+order you want; the preview answers the queue that edit produces, so what you see is what a
+run started with the same edit would execute:
+
+```bash
+curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json' -d '{"queue":{"exclude":["05-search-ui"],"order":["03-write-docs"]}}'
+```
+
+`order` names the tickets to run first, in that order; everything it does not name keeps its
+place behind them. Excluding a ticket excludes everything waiting on it too — the reply's
+`excluded` field lists the whole tail that came out, not just the ticket you named. An
+excluded ticket is not in the Queue at all: it is never attempted and nothing is written back
+to it.
+
+An order that would put a ticket before a blocker that still has to run is refused, naming
+both tickets, and so is an edit that names a ticket the source does not have. A blocker
+already marked `done` gates nothing, so it never stands in the way of a reorder.
+
 Each ticket file is Markdown named `<NN>-<slug>.md`, in the shape `/to-tickets` writes:
 
 ```markdown
@@ -135,13 +153,17 @@ finds, so work left lying about would land in a Checkpoint as if Claude had writ
 Supervisor creates the run's branch with `git checkout -b` and leaves the project on it when
 the run ends, so the branch is there to review.
 
+A start request takes the same `queue` edit the preview does, so the queue you arranged is
+the queue that runs.
+
 The reply carries the run's id and branch. `GET /api/queue` reports the queue's state
-(`idle`, `running`, `completed`, `paused-on-limit`, or `failed` when the run itself broke
-down) and every
+(`idle`, `running`, `paused`, `stopped`, `completed`, `paused-on-limit`, or `failed` when the
+run itself broke down) and every
 ticket's state (`pending`, `running`, `succeeded`, `failed`, `skipped`, or `done` when the
 source already reported it finished), so a run can be watched from the moment it starts.
-Tickets run strictly one at a time, and so do runs: starting a second while one is under way
-answers `409`.
+Tickets run strictly one at a time, and so do runs: starting a second while one is running,
+paused, or waiting out a limit answers `409` — those are all runs somebody could still pick
+up, and starting over them would strand a night's work on a branch nobody was told about.
 
 An Attempt only counts as succeeded when **every** `verify` command exits 0 **and** the
 Attempt left at least one new commit — what Claude says about itself is never enough, which
@@ -152,6 +174,45 @@ ticket.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
+
+## Driving a run
+
+A run under way answers to five controls, each a `POST` with no body:
+
+| Control                                   | What it does                                                        |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| `/api/queue/pause`                        | Stops at the next ticket boundary and stays there                     |
+| `/api/queue/resume`                       | Picks a paused run up where it left off                               |
+| `/api/queue/stop`                         | Ends the run at the next ticket boundary                              |
+| `/api/queue/tickets/<id>/retry`           | Gives a failed ticket another go                                     |
+| `/api/queue/tickets/<id>/skip`            | Takes a ticket that has yet to run out of the run                     |
+
+```bash
+curl -X POST localhost:4317/api/queue/pause
+```
+
+Each answers the queue as the control left it, so whoever gave it sees the result without
+waiting to be told again.
+
+**Pause and stop take effect at the next ticket boundary.** The Attempt under way is not
+interrupted — the Run it is driving cannot be asked to stop half-way — so until the ticket
+ends the queue is still `running` and its `instruction` field says what it is on its way to
+doing. Resuming a run that has been asked to pause but has not got there yet takes the
+instruction back. A stopped run leaves everything it finished standing, on a branch with
+nothing uncommitted around it; nothing picks it up again.
+
+Resume also picks up a run the usage limit stopped, from the ticket the limit interrupted.
+
+**Retry** puts a failed ticket back on the queue along with everything that was only skipped
+because of it, and puts the run back to work if it had already finished. The failure written
+back to the ticket's own file is taken off again before the next Attempt starts, so a ticket
+that goes on to succeed does not still carry the reason it did not. **Skip** takes a ticket
+that has yet to run out of the queue, and everything waiting on it goes with it. A ticket the
+user took out stays out: retrying the ticket that gated it does not put it back, because that
+was a decision rather than a consequence.
+
+A control the run cannot obey — pausing what is not running, retrying what did not fail —
+answers `409` and changes nothing. One naming a ticket the run does not have answers `404`.
 
 ## The dashboard
 
@@ -164,8 +225,18 @@ open http://localhost:4317
 
 It shows the queue's state and its branch, every ticket's state, the output of the Attempt
 in flight as it is printed, and — on any ticket you open — that ticket's Attempts, each with
-its outcome, its failure summary and its whole log. It is read-only: a run is started
-through the API, and nothing on the page changes anything.
+its outcome, its failure summary and its whole log.
+
+It drives the run too, with the controls above: Pause, Resume and Stop in the header, and
+Retry or Take it out on the ticket they belong to. With nothing under way the page offers a
+Ticket Source and a preview of the queue it would build, where tickets can be left out or
+moved before the run starts. Every edit goes back through the preview, so an order the
+blocking edges forbid is refused and explained rather than applied — the list on the page is
+always one you could press Start on.
+
+The page's controls are the API's controls and nothing more, so a control given from the
+phone shows up on the desk without either of them asking. The project a run works in is not
+among them: that is what an instance _is_, and it is settled in the config file.
 
 Everything but the per-ticket history is pushed to the page over one server-sent-event
 stream at `/api/events`, so nothing is ever refreshed and a page opened halfway through the
@@ -231,9 +302,8 @@ write-back, no skipped dependents, nothing held against it — and the queue ent
 `paused-on-limit`, naming the limit and the time it lifts (when Claude reported one) in its
 `error` field.
 
-Waiting the limit out and picking the run up automatically is not built yet, so for now the
-wait is yours: start the run again once the limit has lifted and it carries on from the
-Checkpoints already on the branch.
+Waiting the limit out automatically is not built yet, so for now the wait is yours: resume
+the run once the limit has lifted and it carries on from the ticket the limit interrupted.
 
 ## When an attempt is refused
 

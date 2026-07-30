@@ -3,21 +3,43 @@ import { GitError, openRepository, type GitRepository } from "../git/repository.
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
 import {
+  clearLocalTicketFailure,
   discoverLocalTickets,
   markLocalTicketDone,
   markLocalTicketFailed,
 } from "../tickets/local-source.js";
 import type { Ticket } from "../tickets/ticket.js";
 import { verify } from "../verification/verifier.js";
-import { QueueRunInProgressError, UsageLimitError } from "./errors.js";
+import { downstreamOf } from "./dependents.js";
+import type { QueueEdit } from "./edit.js";
+import {
+  QueueControlError,
+  QueueRunInProgressError,
+  TicketNotInQueueError,
+  UsageLimitError,
+} from "./errors.js";
 import { previewQueue } from "./preview.js";
 
 /**
  * `failed` is the run itself breaking down — a ticket failing still completes the
- * run. `paused-on-limit` is the usage limit stopping it, which is not a failure
- * of anything; the run is picked up again once the limit has lifted.
+ * run. `paused` and `stopped` are the user's doing; `paused-on-limit` is the
+ * usage limit's, which is not a failure of anything. All three leave the run
+ * exactly where it stood, and the first two of them can be picked up again.
  */
-export type QueueRunState = "running" | "completed" | "failed" | "paused-on-limit";
+export type QueueRunState =
+  | "running"
+  | "paused"
+  | "stopped"
+  | "completed"
+  | "failed"
+  | "paused-on-limit";
+
+/**
+ * What the user has told the run to do at the next ticket boundary. An Attempt
+ * under way is never interrupted — the Run it is driving cannot be asked to stop
+ * half-way — so a control given mid-ticket stands here until the ticket ends.
+ */
+export type QueueInstruction = "pause" | "stop";
 
 /**
  * `done` — the Ticket Source already reported it finished, so it is never run.
@@ -53,6 +75,8 @@ export interface QueueRun {
   branch: string;
   state: QueueRunState;
   tickets: TicketRun[];
+  /** What the run has been told to do and has not yet reached a boundary to do. */
+  instruction: QueueInstruction | null;
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
@@ -72,6 +96,8 @@ export interface QueueRunRequest {
   /** Directory of local ticket files the Queue is discovered from. */
   sourceDirectory: string;
   project: Project;
+  /** What the user left out of the Queue, and the order they want it run in. */
+  edit: QueueEdit;
 }
 
 export interface QueueEngine {
@@ -84,6 +110,19 @@ export interface QueueEngine {
    * it is still going. Empty for any ticket but the one being attempted.
    */
   liveOutput(ticketId: string): string;
+  /** Asks the run to stop at the next ticket boundary and stay where it is. */
+  pause(): QueueRun;
+  /**
+   * Puts a paused run back to work where it left off. A run that has been asked
+   * to pause but has not got there yet is simply told to carry on.
+   */
+  resume(): QueueRun;
+  /** Ends the run at the next ticket boundary. Nothing picks it up again. */
+  stop(): QueueRun;
+  /** Gives a failed ticket another go, and its skipped dependents theirs. */
+  retry(ticketId: string): QueueRun;
+  /** Takes a ticket that has yet to run out of the run, its dependents with it. */
+  skip(ticketId: string): QueueRun;
 }
 
 /** The Attempt being watched: whose it is, and what it has printed so far. */
@@ -96,7 +135,17 @@ interface LiveOutput {
 interface Queued {
   entry: TicketRun;
   ticket: Ticket;
+  /**
+   * Whether the user took this ticket out themselves. A ticket skipped only
+   * because something it was waiting on failed is owed another go when that
+   * ticket gets one; a ticket the user took out is not — their decision outlives
+   * whatever happened to the queue after it.
+   */
+  takenOut: boolean;
 }
+
+/** Why a ticket the user took out of a run in progress is not going to run. */
+const SKIPPED_BY_HAND = "the user took it out of the queue, so it was never attempted";
 
 interface RunContext extends QueueRunRequest {
   run: QueueRun;
@@ -128,7 +177,9 @@ export interface QueueEngineDependencies {
 }
 
 export function createQueueEngine(dependencies: QueueEngineDependencies): QueueEngine {
-  let run: QueueRun | undefined;
+  // The whole run, not just what it reports: the controls act on a run that has
+  // stopped executing, so what it takes to pick it up again has to outlive the loop.
+  let context: RunContext | undefined;
   // Kept out of the run's own state: it is written line by line as a Run talks,
   // and it must not be copied into every snapshot the API hands out.
   const live: LiveOutput = { ticketId: null, lines: [] };
@@ -137,7 +188,12 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
   let starting = false;
 
   async function begin(request: QueueRunRequest): Promise<QueueRun> {
-    const preview = previewQueue(await discoverLocalTickets(request.sourceDirectory));
+    // The user's edit is carried out before anything is created, so an impossible
+    // queue is refused rather than started and then found to be stuck.
+    const preview = previewQueue(
+      await discoverLocalTickets(request.sourceDirectory),
+      request.edit,
+    );
     const repository = await openRepository(request.project.directory);
 
     // A run commits everything it finds, so anything already uncommitted would be
@@ -153,6 +209,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
 
     const queued: Queued[] = preview.tickets.map((ticket) => ({
       ticket,
+      takenOut: false,
       entry: {
         id: ticket.id,
         title: ticket.title,
@@ -169,12 +226,12 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       branch: branchOf(name),
       state: "running",
       tickets: queued.map((item) => item.entry),
+      instruction: null,
       error: null,
       pushFailure: null,
     };
-    run = started;
 
-    void execute({
+    context = {
       ...request,
       run: started,
       repository,
@@ -184,20 +241,29 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       live,
       attemptBudget: dependencies.attemptBudget,
       restorePoint: await repository.headCommit(),
-    });
+    };
+    void execute(context);
 
     return snapshot(started);
   }
 
+  /** The run a control is about to act on, or the reason there is nothing to act on. */
+  function runToControl(): RunContext {
+    if (!context) throw new QueueControlError("No queue run has been started yet");
+    return context;
+  }
+
   return {
-    current: () => (run ? snapshot(run) : undefined),
+    current: () => (context ? snapshot(context.run) : undefined),
 
     liveOutput: (ticketId) => (live.ticketId === ticketId ? live.lines.join("\n") : ""),
 
     start: async (request) => {
-      if (starting || run?.state === "running") {
+      // A paused run is still a run: starting over it would strand a night's work
+      // on a branch nobody was told about.
+      if (starting || (context !== undefined && isUnderWay(context.run.state))) {
         throw new QueueRunInProgressError(
-          "A queue run is already under way; stop it before starting another",
+          "A queue run is already under way; resume or stop it before starting another",
         );
       }
 
@@ -208,7 +274,161 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
         starting = false;
       }
     },
+
+    pause: () => snapshot(instruct(runToControl(), "pause")),
+    stop: () => snapshot(instruct(runToControl(), "stop")),
+    resume: () => snapshot(resumeRun(runToControl())),
+    retry: (ticketId) => snapshot(retryTicket(runToControl(), ticketId)),
+    skip: (ticketId) => snapshot(skipTicket(runToControl(), ticketId)),
   };
+}
+
+/** Whether the run is one the user could still pick up, so not one to start over. */
+function isUnderWay(state: QueueRunState): boolean {
+  return state === "running" || state === "paused" || state === "paused-on-limit";
+}
+
+/**
+ * Leaves the user's instruction where the loop will find it, at the end of the
+ * ticket under way. A run that is not executing has no boundary left to reach, so
+ * the instruction is carried out on the spot.
+ */
+function instruct(context: RunContext, instruction: QueueInstruction): QueueRun {
+  const { run } = context;
+
+  if (run.state === "running") {
+    run.instruction = instruction;
+    return run;
+  }
+
+  // Pausing what is already stopped, or stopping what has finished, is asking for
+  // something that has already happened — and is not a control the user gave by
+  // accident, so it is said rather than shrugged off.
+  if (instruction === "pause" || !isUnderWay(run.state)) {
+    throw new QueueControlError(`This run is ${run.state}, so there is nothing to ${instruction}`);
+  }
+
+  run.state = "stopped";
+  return run;
+}
+
+/**
+ * Picks the run up where it left off. Resuming one that has been asked to pause
+ * but has not reached a boundary yet is taking the instruction back — the same
+ * thing the user means by it, and the only thing left to mean while it is running.
+ */
+function resumeRun(context: RunContext): QueueRun {
+  const { run } = context;
+
+  if (run.state === "running") {
+    if (run.instruction !== "pause") {
+      throw new QueueControlError("This run is already running");
+    }
+    run.instruction = null;
+    return run;
+  }
+
+  if (run.state !== "paused" && run.state !== "paused-on-limit") {
+    throw new QueueControlError(`This run is ${run.state}, so there is nothing to resume`);
+  }
+
+  return keepGoing(context);
+}
+
+/**
+ * Gives a failed ticket another go. Everything that was only skipped because of
+ * it is owed one too — it was never tried, and the reason it was not may be about
+ * to stop being true.
+ */
+function retryTicket(context: RunContext, ticketId: string): QueueRun {
+  // A stopped run is over, and retrying is asking for something to be run: it
+  // would have to be started again, which is not a thing a stopped run does.
+  if (context.run.state === "stopped") {
+    throw new QueueControlError("This run has been stopped; start a new one to run its tickets");
+  }
+
+  const queued = findQueued(context, ticketId);
+  if (queued.entry.state !== "failed") {
+    throw new QueueControlError(
+      `${ticketId} is ${queued.entry.state}, and only a failed ticket can be retried`,
+    );
+  }
+
+  requeue(queued);
+  for (const doomed of dependentsOf(context, ticketId)) {
+    if (doomed.entry.state === "skipped" && !doomed.takenOut) requeue(doomed);
+  }
+  // A ticket the user took out is still out, so anything behind it is still
+  // waiting on something that will not run. This puts those back where they were.
+  skipDependents(context);
+
+  // A paused run stays paused: the user stopped it on purpose, and one ticket
+  // going back on the queue is not them asking for the rest of it to start again.
+  if (context.run.state === "paused") return context.run;
+  // Otherwise, asking for a ticket to be run again is asking the run to run it,
+  // so a run that had already finished goes back to work.
+  return keepGoing(context);
+}
+
+/**
+ * Takes a ticket out of a run in progress, and everything waiting on it with it.
+ * Only a ticket that has yet to run can be taken out: the one under way cannot be
+ * called back, and one that has already been settled is history.
+ */
+function skipTicket(context: RunContext, ticketId: string): QueueRun {
+  const queued = findQueued(context, ticketId);
+  if (queued.entry.state !== "pending") {
+    throw new QueueControlError(
+      `${ticketId} is ${queued.entry.state}, and only a ticket still waiting can be skipped`,
+    );
+  }
+
+  queued.takenOut = true;
+  queued.entry.state = "skipped";
+  queued.entry.failure = SKIPPED_BY_HAND;
+  skipDependents(context);
+
+  return context.run;
+}
+
+function requeue(queued: Queued): void {
+  queued.takenOut = false;
+  queued.entry.state = "pending";
+  queued.entry.failure = null;
+}
+
+/**
+ * Puts the run back to work. A run already running has a loop walking its queue
+ * and will reach whatever has just changed by itself; starting a second one would
+ * put two Attempts on the same repository.
+ */
+function keepGoing(context: RunContext): QueueRun {
+  const { run } = context;
+  if (run.state === "running") return run;
+
+  run.state = "running";
+  run.instruction = null;
+  // Whatever stopped the run last time is no longer what is happening.
+  run.error = null;
+  void execute(context);
+
+  return run;
+}
+
+function findQueued(context: RunContext, ticketId: string): Queued {
+  const queued = context.queued.find((item) => item.entry.id === ticketId);
+  if (!queued) throw new TicketNotInQueueError(`This run has no ticket called ${ticketId}`);
+  return queued;
+}
+
+/** The queued items for everything the given ticket gates, itself excepted. */
+function dependentsOf(context: RunContext, ticketId: string): Queued[] {
+  const reached = downstreamOf(
+    context.queued.map((item) => item.ticket),
+    [ticketId],
+  );
+
+  return context.queued.filter((item) => item.entry.id !== ticketId && reached.has(item.entry.id));
 }
 
 /**
@@ -220,7 +440,17 @@ async function execute(context: RunContext): Promise<void> {
   try {
     for (;;) {
       const next = nextOnFrontier(context.queued);
+      // Nothing left to run is a completed queue, whatever was asked of it: there
+      // was nothing there to pause or to stop.
       if (!next) break;
+
+      const asked = context.run.instruction;
+      if (asked !== null) {
+        context.run.instruction = null;
+        context.run.state = asked === "pause" ? "paused" : "stopped";
+        return;
+      }
+
       await attemptTicket(next, context);
     }
     context.run.state = "completed";
@@ -239,6 +469,7 @@ async function execute(context: RunContext): Promise<void> {
  * the second go is meant to be smarter than the first, not merely another one.
  */
 async function attemptTicket(queued: Queued, context: RunContext): Promise<void> {
+  await clearEarlierFailure(queued, context);
   queued.entry.state = "running";
 
   let refusal = await attempt(queued, undefined, context);
@@ -252,6 +483,25 @@ async function attemptTicket(queued: Queued, context: RunContext): Promise<void>
   }
 
   await checkpoint(queued, context);
+}
+
+/**
+ * Takes an earlier go's failure back off the ticket before another one starts. A
+ * ticket that goes on to succeed carrying the reason it did not would be a lie the
+ * morning's triage reads, and the Checkpoint would commit it.
+ *
+ * Only a ticket that has been attempted before has anything to undo, and this is
+ * the one moment it can be undone safely: the working tree is back at the restore
+ * point, so the commit that records it can pick up nothing else.
+ */
+async function clearEarlierFailure(queued: Queued, context: RunContext): Promise<void> {
+  if (queued.entry.attempts === 0) return;
+
+  await clearLocalTicketFailure(context.sourceDirectory, queued.ticket.id, queued.ticket.status);
+  // Ticket files kept outside the repository leave nothing to commit, and the
+  // restore point simply stands.
+  const recorded = await context.repository.commitEverything(`Retrying: ${queued.ticket.title}`);
+  context.restorePoint = recorded ?? context.restorePoint;
 }
 
 /**

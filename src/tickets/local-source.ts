@@ -6,6 +6,7 @@ import {
   parseTicketFile,
   stripTicketNumberPrefix,
   withFailure,
+  withoutFailure,
   withStatus,
   type ParsedTicket,
 } from "./ticket-file.js";
@@ -64,6 +65,21 @@ export async function markLocalTicketFailed(
     const updated = withStatus(contents, "failed");
     return updated === undefined ? undefined : withFailure(updated, summary);
   });
+}
+
+/**
+ * Puts a ticket back the way it was found, for one about to be attempted again:
+ * the status the Ticket Source gave it, and no account of a failure it is being
+ * given the chance to undo.
+ */
+export async function clearLocalTicketFailure(
+  directory: string,
+  ticketId: string,
+  status: string,
+): Promise<void> {
+  await rewriteTicketFile(directory, ticketId, (contents) =>
+    withStatus(withoutFailure(contents), status),
+  );
 }
 
 async function rewriteTicketFile(

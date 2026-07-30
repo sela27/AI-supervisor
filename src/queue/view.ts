@@ -1,4 +1,4 @@
-import type { QueueEngine, QueueRunState, TicketRun } from "./engine.js";
+import type { QueueEngine, QueueInstruction, QueueRunState, TicketRun } from "./engine.js";
 
 /**
  * The queue as anything outside the engine sees it, including before the first run
@@ -9,6 +9,8 @@ export interface QueueView {
   branch: string | null;
   state: QueueRunState | "idle";
   tickets: TicketRun[];
+  /** What the run has been told to do and has not yet reached a boundary to do. */
+  instruction: QueueInstruction | null;
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
@@ -28,6 +30,7 @@ export function currentQueue(engine: QueueEngine): QueueView {
       branch: null,
       state: "idle",
       tickets: [],
+      instruction: null,
       error: null,
       pushFailure: null,
     }

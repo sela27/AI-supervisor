@@ -8,6 +8,8 @@ export interface QueueBody {
   id: string | null;
   branch: string | null;
   state: string;
+  /** What the run has been told to do and has not reached a boundary to do it at. */
+  instruction: string | null;
   /** Why the run itself stopped, when something other than a ticket stopped it. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, when they are not. */
@@ -38,10 +40,18 @@ export interface AttemptBody {
   recordedAt: string;
 }
 
+/** The user's edit of the queue before it runs, as a request carries it. */
+export interface QueueEdit {
+  exclude?: unknown;
+  order?: unknown;
+}
+
 export interface StartOptions {
   /** Where the tickets live; inside the project unless a test says otherwise. */
   source?: string;
   verify?: string[];
+  /** What to leave out and in what order; left out, the source's own queue runs. */
+  queue?: QueueEdit;
 }
 
 export function requestStart(
@@ -72,7 +82,28 @@ function startBody(project: TestProject, options: StartOptions): unknown {
   return {
     source: { type: "local", directory: options.source ?? project.ticketsDirectory },
     project: { directory: project.directory, verify: options.verify ?? ["exit 0"] },
+    ...(options.queue === undefined ? {} : { queue: options.queue }),
   };
+}
+
+/**
+ * Sends one of the run's controls, the way the dashboard's own buttons send it.
+ * Answers the response itself, since half of what a control has to get right is
+ * refusing what the run cannot do.
+ */
+export function requestControl(running: TestSupervisor, path: string): Promise<Response> {
+  return running.request(path, { method: "POST" });
+}
+
+/** Sends a control that is expected to be obeyed, and reads the queue it answers. */
+export async function control(running: TestSupervisor, path: string): Promise<QueueBody> {
+  const response = await requestControl(running, path);
+  expect(response.status).toBe(200);
+  return (await response.json()) as QueueBody;
+}
+
+export function ticketControl(ticketId: string, control: "retry" | "skip"): string {
+  return `/api/queue/tickets/${encodeURIComponent(ticketId)}/${control}`;
 }
 
 function post(running: TestSupervisor, body: unknown): Promise<Response> {
@@ -80,6 +111,26 @@ function post(running: TestSupervisor, body: unknown): Promise<Response> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Asks what a Ticket Source would produce, under the user's edit when there is
+ * one. Half of what an edit has to get right is being refused, so the response
+ * itself comes back rather than the queue inside it.
+ */
+export function requestPreview(
+  running: TestSupervisor,
+  directory: string,
+  queue?: QueueEdit,
+): Promise<Response> {
+  return running.request("/api/queue/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      source: { type: "local", directory },
+      ...(queue === undefined ? {} : { queue }),
+    }),
   });
 }
 

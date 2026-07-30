@@ -1,5 +1,6 @@
 import { TicketSourceError } from "../tickets/errors.js";
-import type { Ticket } from "../tickets/ticket.js";
+import { isDone, type Ticket } from "../tickets/ticket.js";
+import { applyEdit, unedited, type QueueEdit } from "./edit.js";
 
 /**
  * `done` — already finished, never runnable. `blocked` — at least one blocker is
@@ -16,13 +17,21 @@ export interface QueuePreview {
   tickets: QueueTicket[];
   /** The ids of the tickets that could run right now. */
   frontier: string[];
+  /** Every id the user's edit took out, the ones taken along with them included. */
+  excluded: string[];
 }
 
-/** Turns discovered tickets into the Queue the user reviews before starting a run. */
-export function previewQueue(tickets: Ticket[]): QueuePreview {
-  const done = new Set(tickets.filter(isDone).map((ticket) => ticket.id));
+/**
+ * Turns discovered tickets into the Queue the user reviews before starting a run,
+ * carrying out whatever edit the user made of it. The run starts from this same
+ * function, so what the preview shows is what the run executes rather than a
+ * separate account of it.
+ */
+export function previewQueue(tickets: Ticket[], edit: QueueEdit = unedited()): QueuePreview {
+  const edited = applyEdit(orderByBlockingEdges(tickets), edit);
+  const done = new Set(edited.tickets.filter(isDone).map((ticket) => ticket.id));
 
-  const ordered = orderByBlockingEdges(tickets).map((ticket) => ({
+  const ordered = edited.tickets.map((ticket) => ({
     ...ticket,
     state: stateOf(ticket, done),
   }));
@@ -30,11 +39,8 @@ export function previewQueue(tickets: Ticket[]): QueuePreview {
   return {
     tickets: ordered,
     frontier: ordered.filter((ticket) => ticket.state === "ready").map((ticket) => ticket.id),
+    excluded: edited.excluded,
   };
-}
-
-function isDone(ticket: Ticket): boolean {
-  return ticket.status.trim().toLowerCase() === "done";
 }
 
 function stateOf(ticket: Ticket, done: ReadonlySet<string>): TicketState {

@@ -100,6 +100,21 @@ export function withFailure(contents: string, summary: string): string {
 }
 
 /**
+ * Takes an earlier run's account of a failure back off the ticket, for a ticket
+ * that is about to be attempted again. Leaving it there would leave a ticket
+ * that went on to succeed still carrying the reason it did not.
+ */
+export function withoutFailure(contents: string): string {
+  const lines = contents.split(/\r?\n/);
+  const existing = lines.findIndex((line) => line.trim() === FAILURE_HEADING);
+  if (existing === -1) return contents;
+
+  const kept = lines.slice(0, existing);
+  while (kept.at(-1)?.trim() === "") kept.pop();
+  return [...kept, ""].join("\n");
+}
+
+/**
  * The summary is whatever the Run printed, so it goes in as a quotation: a stray
  * `- [ ]` line of Claude's must never come back as one of the ticket's own
  * acceptance criteria.

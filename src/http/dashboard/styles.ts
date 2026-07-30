@@ -61,7 +61,31 @@ h2 { font-size: 0.8rem; margin: 0 0 0.75rem; text-transform: uppercase; letter-s
 .pill[data-state="failed"] { color: var(--failed); border-color: var(--failed); }
 .pill[data-state="paused-on-limit"] { color: var(--running); border-color: var(--running); }
 
+.instruction { color: var(--running); border-color: var(--running); text-transform: none; letter-spacing: 0; }
+.pill[hidden] { display: none; }
+
 .branch { margin-left: auto; color: var(--faint); font-size: 0.85rem; font-family: ui-monospace, monospace; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+/* Thumb-sized whatever it says, because half of these are pressed from a phone. */
+.control {
+  min-height: 44px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.control:hover:enabled { border-color: var(--faint); }
+.control:disabled { opacity: 0.35; cursor: default; }
+.control[hidden] { display: none; }
+.control.primary { border-color: var(--succeeded); color: var(--succeeded); }
+
+.ticket-control { margin: 0 0.75rem 0.6rem; }
 
 .notice { margin: 0; padding: 0.7rem 1rem; background: rgba(209, 88, 79, 0.14); color: var(--failed); font-size: 0.9rem; }
 .notice[hidden] { display: none; }
@@ -122,8 +146,41 @@ main { display: grid; gap: 1rem; padding: 1rem; }
   overflow-wrap: anywhere;
 }
 
+/* The start panel is only for a Supervisor with nothing under way. Which that is
+   comes from the live view, which writes the queue's state onto the body — and
+   before the first event has arrived nothing is known, so nothing is offered. */
+#start-panel { display: none; }
+body[data-queue-state="idle"] #start-panel,
+body[data-queue-state="completed"] #start-panel,
+body[data-queue-state="stopped"] #start-panel,
+body[data-queue-state="failed"] #start-panel { display: block; }
+
+.start .field { display: grid; gap: 0.35rem; margin-bottom: 0.75rem; }
+.start label { color: var(--faint); font-size: 0.8rem; }
+.start input {
+  min-height: 44px;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--page);
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+}
+.start .tickets { margin-top: 0.75rem; }
+
+.queue-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0.6rem; }
+.queue-row .ticket-title { display: flex; align-items: baseline; gap: 0.5rem; cursor: pointer; }
+.queue-row[data-state="skipped"] .ticket-title { color: var(--faint); }
+.include { flex: none; width: 20px; height: 20px; accent-color: var(--succeeded); }
+
+.moves { flex: none; display: flex; gap: 0.25rem; }
+.move { min-width: 44px; padding: 0; font-size: 1rem; }
+
 @media (min-width: 900px) {
   main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  /* Full width: the queue being edited is wider than either column beside it. */
+  #start-panel { grid-column: 1 / -1; }
   .log { max-height: 70vh; }
 }
 `;

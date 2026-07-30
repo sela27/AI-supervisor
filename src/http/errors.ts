@@ -1,7 +1,12 @@
 import type { FastifyReply } from "fastify";
 
 import { GitError } from "../git/repository.js";
-import { QueueRunInProgressError } from "../queue/errors.js";
+import {
+  QueueControlError,
+  QueueEditError,
+  QueueRunInProgressError,
+  TicketNotInQueueError,
+} from "../queue/errors.js";
 import { TicketSourceError, type TicketProblem } from "../tickets/errors.js";
 
 export interface ErrorBody {
@@ -33,8 +38,14 @@ export function toErrorResponse(error: unknown): ErrorResponse {
     return { status: 400, body: { error: error.message, problems: [...error.problems] } };
   }
   if (error instanceof GitError) return badRequest(error.message);
-  if (error instanceof QueueRunInProgressError) {
+  if (error instanceof QueueEditError) return badRequest(error.message);
+  // Nothing is wrong with the request itself — the run is simply not in a state
+  // this control means anything in.
+  if (error instanceof QueueRunInProgressError || error instanceof QueueControlError) {
     return { status: 409, body: { error: error.message, problems: [] } };
+  }
+  if (error instanceof TicketNotInQueueError) {
+    return { status: 404, body: { error: error.message, problems: [] } };
   }
   throw error;
 }

@@ -14,3 +14,11 @@ export interface Ticket {
   blockedBy: string[];
   acceptanceCriteria: AcceptanceCriterion[];
 }
+
+/**
+ * Whether the Ticket Source reports the ticket finished. Done-ness lives in the
+ * status the source wrote, so this is the one place that reads it as a fact.
+ */
+export function isDone(ticket: Ticket): boolean {
+  return ticket.status.trim().toLowerCase() === "done";
+}

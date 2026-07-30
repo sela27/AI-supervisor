@@ -21,6 +21,14 @@ The ordered list of tickets the Supervisor will execute, discovered automaticall
 **Frontier**:
 The set of tickets whose blockers are all done — the only tickets eligible to run next. A ticket with an open blocker is never run.
 
+**Queue edit**:
+What the user did to the Queue before running it: which tickets to leave out, and the order to run the rest in. An edit is answered against the blocking edges, so one that could never be run is refused rather than started.
+_Avoid_: plan, filter, selection
+
+**Excluded**:
+A ticket the user took out of the Queue by a Queue edit, before the run started. It is not in the Queue at all — never attempted, never written back to, and reported nowhere in the run. Everything waiting on an excluded ticket is excluded with it.
+_Avoid_: disabled, deselected, removed
+
 **Done**:
 A ticket the Ticket Source reports as finished. A done ticket is never run, and it no longer blocks the tickets that depend on it. Done-ness always lives in the Ticket Source, never in the Supervisor's own history.
 
@@ -35,7 +43,7 @@ What carries out a Run — the one place the Supervisor launches Claude Code fro
 One Run of a ticket. A ticket gets a bounded number of attempts — its **attempt budget**, two by default — and each attempt after the first receives the previous attempt's failure feedback. A budget belongs to a ticket, not to a run: spending one ticket's whole budget costs the next ticket nothing.
 
 **Dashboard**:
-The Supervisor's own web page — the read-only view of a run, served by the Supervisor itself. It shows what is happening and what happened; it never starts, stops or changes anything.
+The Supervisor's own web page, served by the Supervisor itself — where a run is watched and where it is driven. It shows what is happening and what happened, and it carries the same controls the API does; it decides nothing of its own, and every control it gives is one the API would answer identically.
 _Avoid_: UI, front-end, web app
 
 **Verification**:
@@ -45,7 +53,21 @@ The Supervisor's own judgment of whether an Attempt succeeded — project-config
 The commit that ends a successful ticket. A failed ticket's changes are discarded back to the last Checkpoint.
 
 **Skipped**:
-A ticket the run never attempted because a ticket it was waiting on failed. Skipping is transitive: everything downstream of a failure is skipped too. A skipped ticket is not a failed one — nothing was tried, and nothing is written back to the Ticket Source.
+A ticket the run never attempted — either because a ticket it was waiting on failed, or because the user took it out while the run was under way. Skipping is transitive: everything downstream of a skipped ticket is skipped too. A skipped ticket is not a failed one — nothing was tried, and nothing is written back to the Ticket Source. A ticket skipped by the user stays skipped even when the ticket that gated it is retried; their decision is not something the queue undoes for them.
+
+**Instruction**:
+Something the user has told a run to do that it has not reached the moment to do. An Attempt under way is never interrupted, so a pause or a stop given mid-ticket stands as an instruction until the ticket ends. A run says what it has been instructed to do while it is still on its way to doing it.
+_Avoid_: command, pending action, request
+
+**Retry**:
+Putting a failed ticket back on the Queue so the run gives it another go, along with everything that was skipped only because of it. Distinct from the further Attempts a ticket spends out of its own attempt budget, which nobody asks for: a retry is the user's, and a retried ticket starts a fresh budget.
+
+**Paused**:
+The queue state the user asked for. The run stops at the next ticket boundary and stays exactly where it stood until it is resumed — nothing is discarded, nothing is written back, and no ticket is held responsible. Unlike Paused-on-limit, this one is somebody's decision.
+_Avoid_: suspended, halted
+
+**Stopped**:
+The run the user ended. Like a pause it takes effect at the next ticket boundary, and everything the run finished still stands; unlike a pause, nothing picks it up again — not resuming it, and not retrying one of its tickets.
 
 **Paused-on-limit**:
-The queue state entered when a usage limit is detected. The Supervisor waits until the limit resets (however long that takes) and resumes automatically; a limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget.
+The queue state entered when a usage limit is detected. A limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget, and the ticket is left exactly as it was found. Resuming picks the run up from the ticket the limit interrupted.

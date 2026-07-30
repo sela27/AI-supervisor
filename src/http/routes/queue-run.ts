@@ -2,12 +2,17 @@ import type { FastifyInstance } from "fastify";
 
 import type { QueueRunDefaults } from "../../config.js";
 import { asRecord } from "../../json.js";
-import type { Project, QueueEngine } from "../../queue/engine.js";
+import type { Project, QueueEngine, QueueRun } from "../../queue/engine.js";
 import { currentQueue, type LiveOutputView } from "../../queue/view.js";
 import type { Storage } from "../../storage.js";
 import { isVerification } from "../../verification/verifier.js";
 import { badRequest, sendError, toErrorResponse } from "../errors.js";
-import { notSupplied, readSourceSelection, type Read } from "../request-body.js";
+import {
+  notSupplied,
+  readQueueEdit,
+  readSourceSelection,
+  type Read,
+} from "../request-body.js";
 
 const PROJECT_SHAPE =
   'A project looks like { "project": { "directory": "/path/to/repo", "verify": ["npm test"] } }';
@@ -57,16 +62,57 @@ export function registerQueueRunRoutes(
     const project = readProject(request.body, defaults);
     if (!project.ok) return sendError(reply, badRequest(project.message));
 
+    const edit = readQueueEdit(request.body);
+    if (!edit.ok) return sendError(reply, badRequest(edit.message));
+
     try {
       const run = await engine.start({
         sourceDirectory: source.value,
         project: project.value,
+        edit: edit.value,
       });
       return reply.status(202).send(run);
     } catch (error) {
       return sendError(reply, toErrorResponse(error));
     }
   });
+
+  registerControl(app, "/api/queue/pause", () => engine.pause());
+  registerControl(app, "/api/queue/resume", () => engine.resume());
+  registerControl(app, "/api/queue/stop", () => engine.stop());
+  registerTicketControl(app, "retry", (ticketId) => engine.retry(ticketId));
+  registerTicketControl(app, "skip", (ticketId) => engine.skip(ticketId));
+}
+
+/**
+ * One of the run's controls. Each answers the queue as the control left it, so
+ * whoever gave it sees the result of it without waiting to be told again.
+ */
+function registerControl(app: FastifyInstance, path: string, act: () => QueueRun): void {
+  app.post(path, async (_request, reply) => {
+    try {
+      return act();
+    } catch (error) {
+      return sendError(reply, toErrorResponse(error));
+    }
+  });
+}
+
+function registerTicketControl(
+  app: FastifyInstance,
+  control: string,
+  act: (ticketId: string) => QueueRun,
+): void {
+  app.post<{ Params: { ticketId: string } }>(
+    `/api/queue/tickets/:ticketId/${control}`,
+    async (request, reply) => {
+      try {
+        return act(request.params.ticketId);
+      } catch (error) {
+        return sendError(reply, toErrorResponse(error));
+      }
+    },
+  );
 }
 
 /** The request's project, falling back setting by setting to the configured one. */

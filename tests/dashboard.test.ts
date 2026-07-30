@@ -57,6 +57,25 @@ test("the page brings everything it needs, so a phone on the network needs nothi
   expect(page).toContain("@media");
 });
 
+test("the page carries the controls, so the run is driven from where it is watched", async () => {
+  supervisor = await startTestSupervisor();
+
+  const page = await readPage(supervisor);
+
+  // Every control the API answers has something on the page to press, and the
+  // queue is edited before it starts from the same page it is watched from.
+  for (const control of ["pause", "resume", "stop", "start", "look"]) {
+    expect(page).toContain(`id="${control}"`);
+  }
+  expect(page).toContain(`id="source"`);
+  expect(page).toContain(`id="edited-queue"`);
+  // Retry and Skip belong to a ticket, so they are built per ticket rather than
+  // sitting in the markup; what is in the markup is what builds them.
+  expect(page).toContain("/api/queue/tickets/");
+  expect(page).toContain("Run it again");
+  expect(page).toContain("Take it out");
+});
+
 test("a watcher who joins an idle Supervisor is told the queue is idle at once", async () => {
   supervisor = await startTestSupervisor();
 

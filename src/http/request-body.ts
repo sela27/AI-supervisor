@@ -1,8 +1,12 @@
 import { CONFIG_FILENAME } from "../config-file.js";
 import { asRecord } from "../json.js";
+import { unedited, type QueueEdit } from "../queue/edit.js";
 
 const SOURCE_SHAPE =
   'A ticket source looks like { "source": { "type": "local", "directory": "/path/to/tickets" } }';
+
+const QUEUE_SHAPE =
+  'An edited queue looks like { "queue": { "exclude": ["03-search-ui"], "order": ["02-add-search"] } }';
 
 export type Read<T> = { ok: true; value: T } | { ok: false; message: string };
 
@@ -41,4 +45,36 @@ export function readSourceSelection(body: unknown, configured?: string): Read<st
   }
 
   return { ok: true, value: directory };
+}
+
+/**
+ * What the user did to the Queue before running it. Saying nothing is saying the
+ * Queue is fine as the Ticket Source wrote it; saying anything at all has to say
+ * it as lists of ticket ids, since a half-read edit is a queue the user thinks
+ * they changed and did not.
+ */
+export function readQueueEdit(body: unknown): Read<QueueEdit> {
+  const named = asRecord(body)?.queue;
+  if (named === undefined) return { ok: true, value: unedited() };
+
+  const queue = asRecord(named);
+  if (!queue) return { ok: false, message: QUEUE_SHAPE };
+
+  const exclude = readTicketIds(queue.exclude, "exclude");
+  if (!exclude.ok) return exclude;
+
+  const order = readTicketIds(queue.order, "order");
+  if (!order.ok) return order;
+
+  return { ok: true, value: { exclude: exclude.value, order: order.value } };
+}
+
+function readTicketIds(value: unknown, field: string): Read<string[]> {
+  if (value === undefined) return { ok: true, value: [] };
+
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string" || id.trim() === "")) {
+    return { ok: false, message: `"${field}" must be a list of ticket ids. ${QUEUE_SHAPE}` };
+  }
+
+  return { ok: true, value: value as string[] };
 }

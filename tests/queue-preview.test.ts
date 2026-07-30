@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
+import { requestPreview } from "./helpers/queue.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
 import { removeTempDirectories } from "./helpers/temp-dir.js";
 import { createTicketDirectory, ticketFile } from "./helpers/ticket-files.js";
@@ -12,14 +13,6 @@ afterEach(async () => {
   supervisor = undefined;
   await removeTempDirectories();
 });
-
-function requestPreview(running: TestSupervisor, directory: string): Promise<Response> {
-  return running.request("/api/queue/preview", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source: { type: "local", directory } }),
-  });
-}
 
 test("the queue preview lists every ticket in dependency order", async () => {
   const directory = await createTicketDirectory({
