@@ -1,4 +1,6 @@
+import type { Clock } from "../../src/clock.js";
 import { loadSupervisorConfig } from "../../src/config.js";
+import type { EventSink } from "../../src/events.js";
 import type { Runner } from "../../src/runner/runner.js";
 import { startSupervisor } from "../../src/supervisor.js";
 import { createTempDirectory } from "./temp-dir.js";
@@ -26,6 +28,13 @@ export interface TestSupervisorOptions {
    * Supervisor starts the way one with no config file does.
    */
   configDirectory?: string;
+  /**
+   * Time the test moves by hand, so a limit wait of days is proved in
+   * milliseconds. Left out, the Supervisor runs on real time.
+   */
+  clock?: Clock;
+  /** Where the Supervisor's own events go — the Notifier's seam, stood in for. */
+  onEvent?: EventSink;
 }
 
 export async function startTestSupervisor(
@@ -41,6 +50,8 @@ export async function startTestSupervisor(
     // is on. Everything else is the config file's to decide.
     config: { ...config, dataDir, port: 0, host: "127.0.0.1" },
     runner: options.runner,
+    clock: options.clock,
+    onEvent: options.onEvent,
   });
 
   return {

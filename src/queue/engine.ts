@@ -1,4 +1,6 @@
+import type { Clock } from "../clock.js";
 import { messageOf } from "../errors.js";
+import type { EventSink } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
@@ -18,13 +20,14 @@ import {
   TicketNotInQueueError,
   UsageLimitError,
 } from "./errors.js";
+import { isLongWait, nextLookAt } from "./limit-wait.js";
 import { previewQueue } from "./preview.js";
 
 /**
  * `failed` is the run itself breaking down — a ticket failing still completes the
  * run. `paused` and `stopped` are the user's doing; `paused-on-limit` is the
- * usage limit's, which is not a failure of anything. All three leave the run
- * exactly where it stood, and the first two of them can be picked up again.
+ * usage limit's, which is not a failure of anything and which the run picks
+ * itself up from. All three leave the run exactly where it stood.
  */
 export type QueueRunState =
   | "running"
@@ -77,6 +80,12 @@ export interface QueueRun {
   tickets: TicketRun[];
   /** What the run has been told to do and has not yet reached a boundary to do. */
   instruction: QueueInstruction | null;
+  /**
+   * When a run waiting out a usage limit means to try again, while it is waiting.
+   * An ISO timestamp, so what the API says and what the run is doing cannot drift
+   * apart in the telling.
+   */
+  resumeAt: string | null;
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
@@ -114,7 +123,8 @@ export interface QueueEngine {
   pause(): QueueRun;
   /**
    * Puts a paused run back to work where it left off. A run that has been asked
-   * to pause but has not got there yet is simply told to carry on.
+   * to pause but has not got there yet is simply told to carry on, and one
+   * waiting out a usage limit is told to try now rather than at the stated hour.
    */
   resume(): QueueRun;
   /** Ends the run at the next ticket boundary. Nothing picks it up again. */
@@ -147,13 +157,52 @@ interface Queued {
 /** Why a ticket the user took out of a run in progress is not going to run. */
 const SKIPPED_BY_HAND = "the user took it out of the queue, so it was never attempted";
 
+/**
+ * The usage limit the run is currently sitting through: when it first stopped the
+ * run, and whether anybody has been told it is a long one. Both outlive any single
+ * wait, because a limit that named no reset time is waited out in half-hour looks
+ * and it is the whole spell that is long, not each look at it.
+ */
+interface LimitSpell {
+  since: Date;
+  announced: boolean;
+}
+
+/**
+ * The three things a user can leave a waiting run in: back at work early, held
+ * where it stands, or over. Completing and failing are not among them — a run that
+ * is waiting is between tickets, with nothing under way to end either way.
+ */
+type WaitEnding = "running" | "paused" | "stopped";
+
+/** A limit wait under way: how it is cut short, and by whom when it is. */
+interface LimitWait {
+  wake(): void;
+  /**
+   * What the user told the run while it was waiting. Nothing means the wait ran
+   * its course and the run is free to carry on.
+   */
+  told: WaitEnding | undefined;
+}
+
 interface RunContext extends QueueRunRequest {
   run: QueueRun;
   repository: GitRepository;
   runner: Runner;
   storage: Storage;
+  clock: Clock;
+  /** Where the moments worth telling somebody about go. */
+  onEvent: EventSink;
   queued: Queued[];
   live: LiveOutput;
+  /**
+   * The limit wait in flight, while the run is sitting one out. It is also what
+   * says a loop is alive without the run being `running`, so nothing starts a
+   * second loop over a run that is only waiting.
+   */
+  waiting: LimitWait | undefined;
+  /** The limit the run is sitting through, while it is sitting through one. */
+  limit: LimitSpell | undefined;
   /** How many Attempts a ticket may spend before the run gives up on it. */
   attemptBudget: number;
   /**
@@ -168,6 +217,10 @@ export interface QueueEngineDependencies {
   runner: Runner;
   /** Where Attempt logs are kept — out of the repository the failure path resets. */
   storage: Storage;
+  /** Time, which a limit wait is made of. Tests move it by hand. */
+  clock: Clock;
+  /** Where the moments worth telling somebody about go. */
+  onEvent: EventSink;
   /**
    * How many Attempts one ticket gets. One is a Supervisor that never retries;
    * anything more spends the extra goes on tickets that were refused, each told
@@ -227,6 +280,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       state: "running",
       tickets: queued.map((item) => item.entry),
       instruction: null,
+      resumeAt: null,
       error: null,
       pushFailure: null,
     };
@@ -237,8 +291,12 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       repository,
       runner: dependencies.runner,
       storage: dependencies.storage,
+      clock: dependencies.clock,
+      onEvent: dependencies.onEvent,
       queued,
       live,
+      waiting: undefined,
+      limit: undefined,
       attemptBudget: dependencies.attemptBudget,
       restorePoint: await repository.headCommit(),
     };
@@ -301,6 +359,13 @@ function instruct(context: RunContext, instruction: QueueInstruction): QueueRun 
     return run;
   }
 
+  // A run waiting out a usage limit is already between tickets: there is no
+  // Attempt to reach the end of, so what it is told it does on the spot.
+  const { waiting } = context;
+  if (waiting) {
+    return endWait(context, waiting, instruction === "pause" ? "paused" : "stopped");
+  }
+
   // Pausing what is already stopped, or stopping what has finished, is asking for
   // something that has already happened — and is not a control the user gave by
   // accident, so it is said rather than shrugged off.
@@ -328,11 +393,41 @@ function resumeRun(context: RunContext): QueueRun {
     return run;
   }
 
+  // Resuming a run that is waiting a limit out is asking it to try now rather
+  // than at the hour it was told to expect quota back — the user knowing better
+  // than the Run did, which they often do.
+  const { waiting } = context;
+  if (waiting) return endWait(context, waiting, "running");
+
   if (run.state !== "paused" && run.state !== "paused-on-limit") {
     throw new QueueControlError(`This run is ${run.state}, so there is nothing to resume`);
   }
 
   return keepGoing(context);
+}
+
+/**
+ * Cuts a limit wait short and leaves the run in the state the control asked for.
+ * The loop is still alive inside the wait, so it is the one that carries on from
+ * here — nothing here starts anything.
+ */
+function endWait(context: RunContext, wait: LimitWait, ending: WaitEnding): QueueRun {
+  const { run } = context;
+
+  run.state = ending;
+  run.resumeAt = null;
+  // Leaving the message up would have the run reporting a wait it is no longer
+  // in, whichever way the user ended it.
+  run.error = null;
+  // And the spell of limits ends with it: a run the user took in hand and that is
+  // then refused all over again is at the start of something new, not two hours
+  // into something old.
+  context.limit = undefined;
+
+  wait.told = ending;
+  wait.wake();
+
+  return run;
 }
 
 /**
@@ -398,13 +493,15 @@ function requeue(queued: Queued): void {
 }
 
 /**
- * Puts the run back to work. A run already running has a loop walking its queue
- * and will reach whatever has just changed by itself; starting a second one would
- * put two Attempts on the same repository.
+ * Puts the run back to work. A run already running — or asleep in a limit wait —
+ * has a loop walking its queue and will reach whatever has just changed by
+ * itself; starting a second one would put two Attempts on the same repository.
  */
 function keepGoing(context: RunContext): QueueRun {
   const { run } = context;
-  if (run.state === "running") return run;
+  // A run waiting out a limit has a loop of its own asleep inside the wait; it
+  // will reach whatever has just changed when it wakes.
+  if (run.state === "running" || context.waiting) return run;
 
   run.state = "running";
   run.instruction = null;
@@ -434,7 +531,8 @@ function dependentsOf(context: RunContext, ticketId: string): Queued[] {
 /**
  * Walks the Frontier one ticket at a time until nothing is left to run. A failed
  * ticket takes its dependents out of the queue with it, and the run carries on
- * with whatever was never waiting on it.
+ * with whatever was never waiting on it. A usage limit is not an ending at all:
+ * the loop sits the limit out inside itself and then has the ticket again.
  */
 async function execute(context: RunContext): Promise<void> {
   try {
@@ -451,16 +549,109 @@ async function execute(context: RunContext): Promise<void> {
         return;
       }
 
-      await attemptTicket(next, context);
+      try {
+        await attemptTicket(next, context);
+        // The quota held out, so whatever spell of limits came before it is over.
+        context.limit = undefined;
+      } catch (error) {
+        // A usage limit is not a breakdown: nothing is wrong, there is just no
+        // quota left to spend, and the one thing that fixes it is time.
+        if (!(error instanceof UsageLimitError)) throw error;
+        if (!(await waitOutLimit(error, next, context))) return;
+      }
     }
     context.run.state = "completed";
   } catch (error) {
+    // The repository moving under the run, the source going away: this queue did
+    // not complete, and nothing it could do by itself would change that.
     context.run.error = messageOf(error);
-    // A usage limit is not a breakdown: nothing is wrong, there is just no quota
-    // left to spend. Everything else — the repository moving under the run, the
-    // source going away — means this queue did not complete.
-    context.run.state = error instanceof UsageLimitError ? "paused-on-limit" : "failed";
+    context.run.state = "failed";
   }
+}
+
+/**
+ * Sits out a usage limit and answers whether the run should carry on. Waiting is
+ * the whole treatment: the ticket was not attempted, nothing is held against it,
+ * and when the wait is over the loop simply has it again. A wait that runs its
+ * course is followed by another Attempt, which either works — the quota is back —
+ * or is refused again and brings its own fresh wait with it. That is the probing:
+ * the Runner is the only thing that knows whether there is quota, so asking it is
+ * how the Supervisor finds out, and a refused ask costs the ticket nothing.
+ *
+ * The user overtakes the clock: a pause or a stop given during a wait ends it
+ * there, and a resume means "try now" rather than at the stated hour.
+ */
+async function waitOutLimit(
+  limit: UsageLimitError,
+  queued: Queued,
+  context: RunContext,
+): Promise<boolean> {
+  const { run, clock } = context;
+
+  // A pause or a stop given during the Attempt the limit interrupted has reached
+  // its boundary: the ticket is over. Sitting out a week on behalf of a run that
+  // has been told to stop would be honouring the instruction a week late.
+  const asked = run.instruction;
+  if (asked !== null) {
+    run.instruction = null;
+    run.state = asked === "pause" ? "paused" : "stopped";
+    return false;
+  }
+
+  const now = clock.now();
+  const spell = (context.limit ??= { since: now, announced: false });
+  const resumeAt = nextLookAt(limit.resetAt, now);
+
+  run.state = "paused-on-limit";
+  run.error = messageOf(limit);
+  run.resumeAt = resumeAt.toISOString();
+
+  const woken = new AbortController();
+  const wait: LimitWait = { wake: () => woken.abort(), told: undefined };
+  context.waiting = wait;
+  announceLongWait(spell, resumeAt, queued, context);
+
+  try {
+    await clock.sleepUntil(resumeAt, woken.signal);
+  } finally {
+    context.waiting = undefined;
+  }
+
+  // Whatever the clock says, the user's word is what the run does. A resume is
+  // them agreeing with the clock early, so only the other two end the run here.
+  if (wait.told === "paused" || wait.told === "stopped") return false;
+
+  run.resumeAt = null;
+  run.state = "running";
+  run.error = null;
+  // The spell of limits deliberately survives: this wait is over, but if the
+  // quota is still gone the next one is more of the same wait, and how long the
+  // whole of it has run is the only thing that says it is a long one.
+  return true;
+}
+
+/**
+ * Says so when the limit has held the run up long enough to be worth somebody's
+ * attention. Said once — the whole point is a person who is not watching, and a
+ * phone buzzing every half hour until Friday is one that gets ignored on the
+ * night it matters.
+ */
+function announceLongWait(
+  spell: LimitSpell,
+  resumeAt: Date,
+  queued: Queued,
+  context: RunContext,
+): void {
+  if (spell.announced) return;
+  if (!isLongWait(spell.since, resumeAt)) return;
+
+  spell.announced = true;
+  context.onEvent({
+    type: "long-wait",
+    runId: context.run.id,
+    ticketId: queued.ticket.id,
+    resumeAt: resumeAt.toISOString(),
+  });
 }
 
 /**
@@ -642,13 +833,14 @@ function record(
 }
 
 /**
- * What stops the queue at Paused-on-limit. Waiting the limit out and picking the
- * run up again by itself is not built yet, so for now the wait is the user's.
+ * What puts the queue into Paused-on-limit. The run waits this out and picks
+ * itself up, so what it says is what a reader finding the page quiet needs: why
+ * nothing is happening, and that nothing is expected of them.
  */
 function usageLimitStopped(queued: Queued, resetAt: Date | null): UsageLimitError {
   return new UsageLimitError(
     `the subscription's usage limit stopped the run${liftsAt(resetAt)}. ` +
-      `${queued.ticket.id} was not attempted; start the run again once the limit has lifted.`,
+      `${queued.ticket.id} was not attempted, and the run will have it again once it has waited.`,
     resetAt,
   );
 }

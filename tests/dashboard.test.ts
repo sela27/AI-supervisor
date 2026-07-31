@@ -76,6 +76,21 @@ test("the page carries the controls, so the run is driven from where it is watch
   expect(page).toContain("Take it out");
 });
 
+test("a queue waiting out a limit says so, and says when it will be back", async () => {
+  supervisor = await startTestSupervisor();
+
+  const page = await readPage(supervisor);
+
+  // The one state where nothing prints, nothing moves, and nothing is wrong. A
+  // page that cannot say that is a page somebody restarts the run from at 3am.
+  expect(page).toContain(`id="waiting"`);
+  expect(page).toContain("waiting for the limit");
+  expect(page).toContain("resumeAt");
+  // Resuming a waiting run is not picking it up where it left off — it is asking
+  // it to try the limit now — so the button says that instead.
+  expect(page).toContain("Try now");
+});
+
 test("a watcher who joins an idle Supervisor is told the queue is idle at once", async () => {
   supervisor = await startTestSupervisor();
 

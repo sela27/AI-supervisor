@@ -182,7 +182,7 @@ A run under way answers to five controls, each a `POST` with no body:
 | Control                                   | What it does                                                        |
 | ----------------------------------------- | ------------------------------------------------------------------- |
 | `/api/queue/pause`                        | Stops at the next ticket boundary and stays there                     |
-| `/api/queue/resume`                       | Picks a paused run up where it left off                               |
+| `/api/queue/resume`                       | Picks a paused run up, or has a waiting one try the limit now          |
 | `/api/queue/stop`                         | Ends the run at the next ticket boundary                              |
 | `/api/queue/tickets/<id>/retry`           | Gives a failed ticket another go                                     |
 | `/api/queue/tickets/<id>/skip`            | Takes a ticket that has yet to run out of the run                     |
@@ -201,7 +201,10 @@ doing. Resuming a run that has been asked to pause but has not got there yet tak
 instruction back. A stopped run leaves everything it finished standing, on a branch with
 nothing uncommitted around it; nothing picks it up again.
 
-Resume also picks up a run the usage limit stopped, from the ticket the limit interrupted.
+A run waiting out a usage limit is the exception: it is already between tickets, so a pause
+or a stop given during the wait happens at once, and a resume has it try the limit now rather
+than at the hour it was told to expect quota back. It needs none of them — see
+[When a usage limit is hit](#when-a-usage-limit-is-hit) — the run picks itself up.
 
 **Retry** puts a failed ticket back on the queue along with everything that was only skipped
 because of it, and puts the run back to work if it had already finished. The failure written
@@ -225,7 +228,9 @@ open http://localhost:4317
 
 It shows the queue's state and its branch, every ticket's state, the output of the Attempt
 in flight as it is printed, and — on any ticket you open — that ticket's Attempts, each with
-its outcome, its failure summary and its whole log.
+its outcome, its failure summary and its whole log. A queue waiting out a usage limit says
+when it will be back, which is the one state where nothing prints, nothing moves, and nothing
+is wrong.
 
 It drives the run too, with the controls above: Pause, Resume and Stop in the header, and
 Retry or Take it out on the ticket they belong to. With nothing under way the page offers a
@@ -302,8 +307,30 @@ write-back, no skipped dependents, nothing held against it — and the queue ent
 `paused-on-limit`, naming the limit and the time it lifts (when Claude reported one) in its
 `error` field.
 
-Waiting the limit out automatically is not built yet, so for now the wait is yours: resume
-the run once the limit has lifted and it carries on from the ticket the limit interrupted.
+**Then it waits, and picks itself up.** Nothing is asked of you. `GET /api/queue` reports
+`resumeAt`, the moment the run means to try again, and the dashboard turns that into
+"waiting for the limit — resuming at 06:31":
+
+```json
+{ "state": "paused-on-limit", "resumeAt": "2026-07-30T06:31:00.000Z" }
+```
+
+Where Claude reported a reset time, that is what the run waits for, plus a minute so it is
+not refused a second time by seconds. Where it reported none there is nothing to wait for in
+particular, so the run tries the ticket again every half hour until the quota is back —
+trying is the only way to ask, and a refused try costs the ticket nothing. Either way the
+ticket is then run from scratch, with its whole attempt budget intact, and the run carries on
+down the queue.
+
+A five-hour window and a weekly cap are the same mechanism at different lengths: a wait of
+days is a wait. Once a limit has held the run up for more than two hours it raises an event,
+which notifications will carry to your phone once they exist — counted from when the limit
+first stopped the run, so a cap that reported no reset time and is being looked at every half
+hour still reaches you rather than being sat through in silence. It is raised once.
+
+Resuming by hand means "try now" rather than at the hour Claude named — useful when you know
+better than it did. Pausing or stopping during a wait takes effect on the spot: there is no
+Attempt under way, so there is no ticket boundary left to reach.
 
 ## When an attempt is refused
 

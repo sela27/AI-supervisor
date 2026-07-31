@@ -3,7 +3,9 @@ import { join, resolve } from "node:path";
 
 import type { FastifyServerOptions } from "fastify";
 
+import { systemClock, type Clock } from "./clock.js";
 import type { SupervisorConfig } from "./config.js";
+import { noEvents, type EventSink } from "./events.js";
 import { buildApp } from "./http/app.js";
 import { createQueueEngine } from "./queue/engine.js";
 import type { Runner } from "./runner/runner.js";
@@ -17,6 +19,16 @@ export interface SupervisorOptions {
   logger?: FastifyServerOptions["logger"];
   /** Executes one Attempt. Tests substitute a fake so no Claude Code is launched. */
   runner?: Runner;
+  /**
+   * Time, which a usage-limit wait is made of. Real time unless a test hands over
+   * a clock it can move itself — a weekly limit is not something to sit through.
+   */
+  clock?: Clock;
+  /**
+   * Where the moments worth telling somebody about go. Nothing consumes them yet;
+   * notifications are their own ticket, and this is what they will be built on.
+   */
+  onEvent?: EventSink;
 }
 
 export interface RunningSupervisor {
@@ -36,6 +48,8 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   const engine = createQueueEngine({
     runner: options.runner ?? unavailableRunner(),
     storage,
+    clock: options.clock ?? systemClock(),
+    onEvent: options.onEvent ?? noEvents,
     attemptBudget: config.attemptBudget,
   });
   const app = buildApp({

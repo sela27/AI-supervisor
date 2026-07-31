@@ -10,6 +10,8 @@ export interface QueueBody {
   state: string;
   /** What the run has been told to do and has not reached a boundary to do it at. */
   instruction: string | null;
+  /** When a run waiting out a usage limit means to try again, while it is waiting. */
+  resumeAt: string | null;
   /** Why the run itself stopped, when something other than a ticket stopped it. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, when they are not. */

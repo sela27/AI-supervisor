@@ -98,3 +98,22 @@ export function stoppedByTheLimit(
     return { status: "limit-hit", resetAt, output: "Working on it, then the quota ran out." };
   };
 }
+
+/**
+ * A subscription with no quota left for the first few Runs and quota again after
+ * that — what a Supervisor that waits a limit out is meant to sit through.
+ */
+export function limitedFor(
+  project: TestProject,
+  refusals: number,
+  resetAt: Date | null,
+): FakeRunnerBehaviour {
+  const refused = stoppedByTheLimit(project, resetAt);
+  const works = commitsWork(project);
+  let spent = 0;
+
+  return (request) => {
+    spent += 1;
+    return spent <= refusals ? refused(request) : works(request);
+  };
+}

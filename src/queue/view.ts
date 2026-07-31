@@ -11,6 +11,8 @@ export interface QueueView {
   tickets: TicketRun[];
   /** What the run has been told to do and has not yet reached a boundary to do. */
   instruction: QueueInstruction | null;
+  /** When a run waiting out a usage limit means to try again, while it is waiting. */
+  resumeAt: string | null;
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
@@ -31,6 +33,7 @@ export function currentQueue(engine: QueueEngine): QueueView {
       state: "idle",
       tickets: [],
       instruction: null,
+      resumeAt: null,
       error: null,
       pushFailure: null,
     }

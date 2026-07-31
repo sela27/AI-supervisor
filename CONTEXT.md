@@ -70,4 +70,11 @@ _Avoid_: suspended, halted
 The run the user ended. Like a pause it takes effect at the next ticket boundary, and everything the run finished still stands; unlike a pause, nothing picks it up again — not resuming it, and not retrying one of its tickets.
 
 **Paused-on-limit**:
-The queue state entered when a usage limit is detected. A limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget, and the ticket is left exactly as it was found. Resuming picks the run up from the ticket the limit interrupted.
+The queue state entered when a usage limit is detected. A limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget, and the ticket is left exactly as it was found. Unlike Paused and Stopped, nobody asked for this one and nobody has to end it: the run waits the limit out and picks itself up from the ticket the limit interrupted, however long the wait — a five-hour window and a weekly cap are the same thing at different lengths. A run waiting says when it means to try again; resuming it by hand means "try now" rather than at that hour.
+
+**Probe**:
+An Attempt made to find out whether the usage limit has lifted. A limit that named no reset time leaves nothing to wait for in particular, so the run goes and asks every so often. There is no cheaper way to ask than to try the ticket — and trying costs the ticket nothing, since a limit-interrupted Attempt is discarded and never held against it.
+
+**Event**:
+Something the Supervisor wants somebody told about, as distinct from the run state the Dashboard already shows: it is for reaching a person who is not looking. A long limit wait is one; a queue finishing, a ticket finally failing and the Supervisor crashing will be others.
+_Avoid_: notification (that is what carries an event, not the event itself), message

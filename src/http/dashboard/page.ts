@@ -25,6 +25,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
       <h1>AI Supervisor</h1>
       <span id="queue-state" class="pill">connecting</span>
       <span id="instruction" class="pill instruction" hidden></span>
+      <span id="waiting" class="pill instruction" hidden></span>
       <div class="controls">
         <button type="button" id="pause" class="control" hidden>Pause</button>
         <button type="button" id="resume" class="control" hidden>Resume</button>
