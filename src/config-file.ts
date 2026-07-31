@@ -6,6 +6,7 @@ import { EVENT_TYPES } from "./events.js";
 import { asRecord } from "./json.js";
 import type { NotificationSettings } from "./notifications/settings.js";
 import { isWebhookUrl } from "./notifications/webhook.js";
+import type { SafetyStops } from "./queue/safety.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
 import { isRepositoryName, type SourceSelection } from "./tickets/source.js";
 import { isVerification } from "./verification/verifier.js";
@@ -37,6 +38,8 @@ export interface FileSettings {
   attemptBudget?: number;
   /** Whatever the file said about being told things; the rest is defaulted after. */
   notifications?: Partial<NotificationSettings>;
+  /** Whatever the file said about how far a run may go; the rest is defaulted after. */
+  safety?: Partial<SafetyStops>;
   defaults: QueueRunDefaults;
 }
 
@@ -49,11 +52,13 @@ const FILE_SETTINGS = [
   "runner",
   "source",
   "notifications",
+  "safety",
   "project",
 ];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
 const SOURCE_SETTINGS = ["type", "directory", "repository"];
 const NOTIFICATION_SETTINGS = ["enabled", "webhook", "on"];
+const SAFETY_SETTINGS = ["maxTickets", "maxRuntimeMinutes", "consecutiveFailures"];
 const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
 
 export const HIGHEST_PORT = 65_535;
@@ -97,6 +102,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const runner = section(path, settings.runner, RUNNER_SETTINGS, "runner");
   const source = section(path, settings.source, SOURCE_SETTINGS, "source");
   const notifications = section(path, settings.notifications, NOTIFICATION_SETTINGS, "notifications");
+  const safety = section(path, settings.safety, SAFETY_SETTINGS, "safety");
   const project = section(path, settings.project, PROJECT_SETTINGS, "project");
 
   const dataDir = directory(path, settings.dataDir, "dataDir");
@@ -108,6 +114,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const permissionMode = mode(path, runner.permissionMode);
   const ticketSource = sourceSelection(path, source);
   const told = notificationSettings(path, notifications);
+  const stops = safetyStops(path, safety);
   const projectDirectory = directory(path, project.directory, "project.directory");
   const verify = commands(path, project.verify);
   const pushCheckpoints = flag(path, project.pushCheckpoints, "project.pushCheckpoints");
@@ -121,6 +128,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(attemptBudget === undefined ? {} : { attemptBudget }),
     ...(told === undefined ? {} : { notifications: told }),
+    ...(stops === undefined ? {} : { safety: stops }),
     defaults: {
       ...(ticketSource === undefined ? {} : { source: ticketSource }),
       ...(projectDirectory === undefined ? {} : { projectDirectory }),
@@ -321,6 +329,64 @@ function eventSwitches(path: string, value: unknown): NotificationSettings["on"]
     if (said !== undefined) on[type] = said;
   }
   return on;
+}
+
+/**
+ * How far a run of this instance may go on its own. Nothing said about the stops
+ * at all is left undefined rather than defaulted here, so the defaults stay in
+ * the one place every other default lives.
+ */
+function safetyStops(
+  path: string,
+  safety: Record<string, unknown>,
+): Partial<SafetyStops> | undefined {
+  const maxTickets = allowance(path, safety.maxTickets, "safety.maxTickets", "tickets");
+  const maxRuntimeMinutes = allowance(
+    path,
+    safety.maxRuntimeMinutes,
+    "safety.maxRuntimeMinutes",
+    "minutes",
+  );
+  const consecutiveFailures = allowance(
+    path,
+    safety.consecutiveFailures,
+    "safety.consecutiveFailures",
+    "tickets",
+  );
+
+  const said = [maxTickets, maxRuntimeMinutes, consecutiveFailures];
+  if (said.every((stop) => stop === undefined)) return undefined;
+
+  return {
+    ...(maxTickets === undefined ? {} : { maxTickets }),
+    ...(maxRuntimeMinutes === undefined ? {} : { maxRuntimeMinutes }),
+    ...(consecutiveFailures === undefined ? {} : { consecutiveFailures }),
+  };
+}
+
+/**
+ * What one Safety stop allows: a whole number of whatever it counts, or `null`
+ * for a stop this instance does not want at all. Zero would be a run that stopped
+ * before it began, which is nobody's intention — and a stop the file switched off
+ * on purpose is not the same as one it never mentioned, which is why it takes a
+ * word of its own rather than a number that happens to mean nothing.
+ */
+function allowance(
+  path: string,
+  value: unknown,
+  name: string,
+  counted: string,
+): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new Error(
+      `${setting(path, name)} must be a whole number of ${counted}, at least 1, ` +
+        `or null for no such stop — got ${quote(value)}`,
+    );
+  }
+  return value as number;
 }
 
 function wholePort(path: string, value: unknown): number | undefined {

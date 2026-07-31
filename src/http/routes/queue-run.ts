@@ -13,6 +13,7 @@ import {
   notSupplied,
   readQueueEdit,
   readSourceSelection,
+  readStartAt,
   type Read,
 } from "../request-body.js";
 
@@ -69,11 +70,15 @@ export function registerQueueRunRoutes(
     const edit = readQueueEdit(request.body);
     if (!edit.ok) return sendError(reply, badRequest(edit.message));
 
+    const startAt = readStartAt(request.body);
+    if (!startAt.ok) return sendError(reply, badRequest(startAt.message));
+
     try {
       const run = await engine.start({
         source: openTicketSource(source.value, gh),
         project: project.value,
         edit: edit.value,
+        ...(startAt.value === undefined ? {} : { startAt: startAt.value }),
       });
       return reply.status(202).send(run);
     } catch (error) {

@@ -13,6 +13,7 @@ export const START_SCRIPT = String.raw`
 (function () {
   const byId = function (id) { return document.getElementById(id); };
   const source = byId("source");
+  const startAt = byId("start-at");
   const look = byId("look");
   const start = byId("start");
   const notice = byId("start-notice");
@@ -42,9 +43,10 @@ export const START_SCRIPT = String.raw`
   });
 
   start.addEventListener("click", function () {
-    post("/api/queue/start", { queue: edit })
+    post("/api/queue/start", Object.assign({ queue: edit }, chosenHour()))
       .then(function () {
-        // The run is under way; the live view takes the page from here.
+        // The run is under way, or armed for later; the live view takes the page
+        // from here either way.
         notice.hidden = true;
         list.replaceChildren();
         edited = null;
@@ -52,6 +54,21 @@ export const START_SCRIPT = String.raw`
       })
       .catch(complain);
   });
+
+  /**
+   * The hour to begin at, if the reader picked one. The field is in their own
+   * time, which is the only time they think in at eleven at night; the Supervisor
+   * is told the moment itself, which has no timezone to be wrong about.
+   *
+   * An hour that will not read is handed over exactly as it was written, so the
+   * Supervisor refuses it. This page decides nothing: quietly dropping it would
+   * start a run tonight that somebody had armed for tomorrow.
+   */
+  function chosenHour() {
+    if (startAt.value === "") return {};
+    const when = new Date(startAt.value);
+    return { startAt: isNaN(when.getTime()) ? startAt.value : when.toISOString() };
+  }
 
   function idOf(ticket) { return ticket.id; }
 

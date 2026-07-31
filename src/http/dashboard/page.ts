@@ -44,6 +44,10 @@ export const DASHBOARD_PAGE = `<!doctype html>
           <input id="source" type="text" autocapitalize="off" autocorrect="off"
                  spellcheck="false" placeholder="the configured ticket source" />
         </div>
+        <div class="field">
+          <label for="start-at">Start at (leave empty to start now)</label>
+          <input id="start-at" type="datetime-local" />
+        </div>
         <div class="controls">
           <button type="button" id="look" class="control">Preview queue</button>
           <button type="button" id="start" class="control primary" hidden>Start run</button>

@@ -10,10 +10,12 @@ export interface QueueBody {
   state: string;
   /** What the run has been told to do and has not reached a boundary to do it at. */
   instruction: string | null;
-  /** When a run waiting out a usage limit means to try again, while it is waiting. */
+  /** When a run that is not working means to be: a limit's hour, or an armed one's. */
   resumeAt: string | null;
   /** Why the run itself stopped, when something other than a ticket stopped it. */
   error: string | null;
+  /** Which Safety stop ended the run, when one did. */
+  stoppedBy: string | null;
   /** Why Checkpoints are not reaching the remote, when they are not. */
   pushFailure: string | null;
   tickets: {
@@ -54,6 +56,8 @@ export interface StartOptions {
   verify?: string[];
   /** What to leave out and in what order; left out, the source's own queue runs. */
   queue?: QueueEdit;
+  /** The hour to begin at, for a run armed rather than started; as a request writes it. */
+  startAt?: string;
 }
 
 export function requestStart(
@@ -85,6 +89,7 @@ function startBody(project: TestProject, options: StartOptions): unknown {
     source: { type: "local", directory: options.source ?? project.ticketsDirectory },
     project: { directory: project.directory, verify: options.verify ?? ["exit 0"] },
     ...(options.queue === undefined ? {} : { queue: options.queue }),
+    ...(options.startAt === undefined ? {} : { startAt: options.startAt }),
   };
 }
 

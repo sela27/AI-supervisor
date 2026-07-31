@@ -62,15 +62,23 @@ _Avoid_: command, pending action, request
 **Retry**:
 Putting a failed ticket back on the Queue so the run gives it another go, along with everything that was skipped only because of it. Distinct from the further Attempts a ticket spends out of its own attempt budget, which nobody asks for: a retry is the user's, and a retried ticket starts a fresh budget.
 
+**Armed**:
+A run that has been started and has not begun: its branch is cut and its Queue is settled, and it is waiting for the hour it was told to start at. Everything that could refuse the run was answered when it was armed, while the user was still there to be told. The user overtakes the hour — resuming an armed run begins it now, and pausing or stopping one ends it before it has run a thing.
+_Avoid_: scheduled, queued (the Queue is a different thing), pending
+
 **Paused**:
 The queue state the user asked for. The run stops at the next ticket boundary and stays exactly where it stood until it is resumed — nothing is discarded, nothing is written back, and no ticket is held responsible. Unlike Paused-on-limit, this one is somebody's decision.
 _Avoid_: suspended, halted
 
 **Stopped**:
-The run the user ended. Like a pause it takes effect at the next ticket boundary, and everything the run finished still stands; unlike a pause, nothing picks it up again — not resuming it, and not retrying one of its tickets.
+The run the user ended, whether by saying so or by a Safety stop they set in advance. Like a pause it takes effect at the next ticket boundary, and everything the run finished still stands; unlike a pause, nothing picks it up again — not resuming it, and not retrying one of its tickets.
 
 **Paused-on-limit**:
 The queue state entered when a usage limit is detected. A limit-interrupted Attempt is discarded and does not count against the ticket's attempt budget, and the ticket is left exactly as it was found. Unlike Paused and Stopped, nobody asked for this one and nobody has to end it: the run waits the limit out and picks itself up from the ticket the limit interrupted, however long the wait — a five-hour window and a weekly cap are the same thing at different lengths. A run waiting says when it means to try again; resuming it by hand means "try now" rather than at that hour.
+
+**Safety stop**:
+A bound the instance was given in advance on how far one run may go on its own: how many tickets it may run, how long it may go on for, and how many tickets may fail one after another. Reaching one leaves the run Stopped, at a ticket boundary like any other ending, with the stop that ended it said in words. Nothing about it is a failure and nothing about it is the subscription's — a usage limit is somebody else's decision that the run waits out, and a Safety stop is the user's own decision that the run obeys.
+_Avoid_: limit (that is the usage limit), quota, guard, timeout
 
 **Probe**:
 An Attempt made to find out whether the usage limit has lifted. A limit that named no reset time leaves nothing to wait for in particular, so the run goes and asks every so often. There is no cheaper way to ask than to try the ticket — and trying costs the ticket nothing, since a limit-interrupted Attempt is discarded and never held against it.

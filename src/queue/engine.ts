@@ -17,14 +17,18 @@ import {
 } from "./errors.js";
 import { isLongWait, nextLookAt } from "./limit-wait.js";
 import { previewQueue } from "./preview.js";
+import { runsUntil, safetyStopReached, type RunSoFar, type SafetyStops } from "./safety.js";
 
 /**
  * `failed` is the run itself breaking down — a ticket failing still completes the
- * run. `paused` and `stopped` are the user's doing; `paused-on-limit` is the
- * usage limit's, which is not a failure of anything and which the run picks
- * itself up from. All three leave the run exactly where it stood.
+ * run. `paused` and `stopped` are the user's doing, a Safety stop included;
+ * `paused-on-limit` is the usage limit's, which is not a failure of anything and
+ * which the run picks itself up from. All three leave the run exactly where it
+ * stood. `armed` is a run that has not begun at all: it has its branch and its
+ * Queue, and it is waiting for the hour it was told to start at.
  */
 export type QueueRunState =
+  | "armed"
   | "running"
   | "paused"
   | "stopped"
@@ -76,13 +80,18 @@ export interface QueueRun {
   /** What the run has been told to do and has not yet reached a boundary to do. */
   instruction: QueueInstruction | null;
   /**
-   * When a run waiting out a usage limit means to try again, while it is waiting.
-   * An ISO timestamp, so what the API says and what the run is doing cannot drift
-   * apart in the telling.
+   * When a run that is not working means to be — the hour a limit wait ends, or
+   * the hour an armed run was told to begin at. An ISO timestamp, so what the API
+   * says and what the run is doing cannot drift apart in the telling.
    */
   resumeAt: string | null;
   /** Why the run broke down, when it did. A failed ticket is not that. */
   error: string | null;
+  /**
+   * Which Safety stop ended the run, when one did. The user's own stop leaves
+   * this empty: they were there, and they know why.
+   */
+  stoppedBy: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
   pushFailure: string | null;
 }
@@ -102,6 +111,12 @@ export interface QueueRunRequest {
   project: Project;
   /** What the user left out of the Queue, and the order they want it run in. */
   edit: QueueEdit;
+  /**
+   * The hour to begin at, for a run armed in the evening for the night. Left out,
+   * the run begins the moment it is started. An hour already gone by is no wait
+   * at all — refusing a request a minute late would be worse than running it.
+   */
+  startAt?: Date;
 }
 
 export interface QueueEngine {
@@ -170,14 +185,14 @@ interface LimitSpell {
 }
 
 /**
- * The three things a user can leave a waiting run in: back at work early, held
- * where it stands, or over. Completing and failing are not among them — a run that
- * is waiting is between tickets, with nothing under way to end either way.
+ * The three things a user can leave a waiting run in: at work early, held where
+ * it stands, or over. Completing and failing are not among them — a run that is
+ * waiting is between tickets, with nothing under way to end either way.
  */
 type WaitEnding = "running" | "paused" | "stopped";
 
-/** A limit wait under way: how it is cut short, and by whom when it is. */
-interface LimitWait {
+/** A wait under way — for a limit to lift, or for an armed run's own hour. */
+interface Wait {
   wake(): void;
   /**
    * What the user told the run while it was waiting. Nothing means the wait ran
@@ -197,15 +212,33 @@ interface RunContext extends QueueRunRequest {
   queued: Queued[];
   live: LiveOutput;
   /**
-   * The limit wait in flight, while the run is sitting one out. It is also what
-   * says a loop is alive without the run being `running`, so nothing starts a
-   * second loop over a run that is only waiting.
+   * The wait in flight, while the run is sitting one out. It is also what says a
+   * loop is alive without the run being `running`, so nothing starts a second
+   * loop over a run that is only waiting.
    */
-  waiting: LimitWait | undefined;
+  waiting: Wait | undefined;
   /** The limit the run is sitting through, while it is sitting through one. */
   limit: LimitSpell | undefined;
   /** How many Attempts a ticket may spend before the run gives up on it. */
   attemptBudget: number;
+  /** How far this run may go on its own before it gives up and leaves the rest. */
+  safety: SafetyStops;
+  /**
+   * The hour the run has still to wait for before it begins, while it has one.
+   * Taken off as soon as the waiting is over however it ended, so a run picked up
+   * again later is never armed a second time.
+   */
+  startAt: Date | undefined;
+  /**
+   * When the run began working, which is what its allowed time is measured from.
+   * Not the moment it was started: a run armed at six for midnight spent none of
+   * its night waiting for midnight. Unset until the waiting, if any, is over.
+   */
+  startedAt: Date | undefined;
+  /** Tickets this run has run. One a usage limit interrupted is not among them. */
+  ticketsRun: number;
+  /** How many tickets have failed since the last one that did not. */
+  failuresInARow: number;
   /**
    * Where a failed Attempt is thrown back to: this run's last Checkpoint, or the
    * commit recording the last failure, whichever came later. Never an Attempt's
@@ -228,6 +261,8 @@ export interface QueueEngineDependencies {
    * what refused the last one.
    */
   attemptBudget: number;
+  /** How far one run may go on its own before it stops and leaves the rest. */
+  safety: SafetyStops;
 }
 
 export function createQueueEngine(dependencies: QueueEngineDependencies): QueueEngine {
@@ -246,14 +281,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
     // queue is refused rather than started and then found to be stuck.
     const preview = previewQueue(await request.source.discover(), request.edit);
     const repository = await openRepository(request.project.directory);
-
-    // A run commits everything it finds, so anything already uncommitted would be
-    // swept into the first Checkpoint as if the Run had written it.
-    if (await repository.isDirty()) {
-      throw new GitError(
-        `${request.project.directory} has uncommitted changes — commit or stash them before starting a run`,
-      );
-    }
+    await refuseUncommitted(repository, request.project.directory);
 
     const name = await reserveRunName(repository);
     await repository.createBranch(branchOf(name));
@@ -276,11 +304,15 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
     const started: QueueRun = {
       id: name,
       branch: branchOf(name),
-      state: "running",
+      // Everything a run needs is settled here whether or not it begins here: a
+      // run armed for midnight is refused now, while the user is still looking,
+      // rather than found to be impossible at midnight.
+      state: request.startAt === undefined ? "running" : "armed",
       tickets: queued.map((item) => item.entry),
       instruction: null,
-      resumeAt: null,
+      resumeAt: request.startAt?.toISOString() ?? null,
       error: null,
+      stoppedBy: null,
       pushFailure: null,
     };
 
@@ -297,6 +329,11 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       waiting: undefined,
       limit: undefined,
       attemptBudget: dependencies.attemptBudget,
+      safety: dependencies.safety,
+      startAt: request.startAt,
+      startedAt: undefined,
+      ticketsRun: 0,
+      failuresInARow: 0,
       restorePoint: await repository.headCommit(),
     };
     // Said before a single ticket is attempted: a queue holding work nothing in it
@@ -345,7 +382,25 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
 
 /** Whether the run is one the user could still pick up, so not one to start over. */
 function isUnderWay(state: QueueRunState): boolean {
-  return state === "running" || state === "paused" || state === "paused-on-limit";
+  return (
+    state === "armed" ||
+    state === "running" ||
+    state === "paused" ||
+    state === "paused-on-limit"
+  );
+}
+
+/**
+ * Refuses a project with work lying about in it. A run commits everything it
+ * finds, so anything already uncommitted would be swept into the first Checkpoint
+ * as if the Run had written it.
+ */
+async function refuseUncommitted(repository: GitRepository, directory: string): Promise<void> {
+  if (!(await repository.isDirty())) return;
+
+  throw new GitError(
+    `${directory} has uncommitted changes — commit or stash them before starting a run`,
+  );
 }
 
 /**
@@ -361,8 +416,9 @@ function instruct(context: RunContext, instruction: QueueInstruction): QueueRun 
     return run;
   }
 
-  // A run waiting out a usage limit is already between tickets: there is no
-  // Attempt to reach the end of, so what it is told it does on the spot.
+  // A run that is waiting — for a limit to lift, or for its own hour — is already
+  // between tickets: there is no Attempt to reach the end of, so what it is told
+  // it does on the spot.
   const { waiting } = context;
   if (waiting) {
     return endWait(context, waiting, instruction === "pause" ? "paused" : "stopped");
@@ -397,7 +453,8 @@ function resumeRun(context: RunContext): QueueRun {
 
   // Resuming a run that is waiting a limit out is asking it to try now rather
   // than at the hour it was told to expect quota back — the user knowing better
-  // than the Run did, which they often do.
+  // than the Run did, which they often do. Resuming an armed one is the same
+  // thing said about a different hour: begin now, rather than at midnight.
   const { waiting } = context;
   if (waiting) return endWait(context, waiting, "running");
 
@@ -409,11 +466,11 @@ function resumeRun(context: RunContext): QueueRun {
 }
 
 /**
- * Cuts a limit wait short and leaves the run in the state the control asked for.
- * The loop is still alive inside the wait, so it is the one that carries on from
+ * Cuts a wait short and leaves the run in the state the control asked for. The
+ * loop is still alive inside the wait, so it is the one that carries on from
  * here — nothing here starts anything.
  */
-function endWait(context: RunContext, wait: LimitWait, ending: WaitEnding): QueueRun {
+function endWait(context: RunContext, wait: Wait, ending: WaitEnding): QueueRun {
   const { run } = context;
 
   run.state = ending;
@@ -531,15 +588,22 @@ function dependentsOf(context: RunContext, ticketId: string): Queued[] {
 }
 
 /**
- * Walks the Frontier one ticket at a time until nothing is left to run. A failed
+ * Walks the Frontier one ticket at a time until nothing is left to run — or until
+ * the run has gone as far as this instance allows one to go on its own. A failed
  * ticket takes its dependents out of the queue with it, and the run carries on
  * with whatever was never waiting on it. A usage limit is not an ending at all:
- * the loop sits the limit out inside itself and then has the ticket again.
+ * the loop sits the limit out inside itself and then has the ticket again, and
+ * an armed run's own hour is sat out the same way before any of this begins.
  */
 async function execute(context: RunContext): Promise<void> {
   let brokeDown: string | undefined;
 
   try {
+    if (!(await waitForItsHour(context))) return;
+    // The night's own clock starts here rather than at the arming: the hours a run
+    // spent waiting for the hour it was told are not hours it spent working.
+    const startedAt = (context.startedAt ??= context.clock.now());
+
     for (;;) {
       const next = nextOnFrontier(context.queued);
       // Nothing left to run is a completed queue, whatever was asked of it: there
@@ -553,6 +617,14 @@ async function execute(context: RunContext): Promise<void> {
         return;
       }
 
+      // Read at the ticket boundary like everything else that ends a run: the
+      // Attempt under way is never cut off half-way, whatever it has run into.
+      const reached = safetyStopReached(context.safety, soFar(context, startedAt));
+      if (reached !== undefined) {
+        stopForSafety(context, reached);
+        return;
+      }
+
       try {
         await attemptTicket(next, context);
         // The quota held out, so whatever spell of limits came before it is over.
@@ -561,7 +633,7 @@ async function execute(context: RunContext): Promise<void> {
         // A usage limit is not a breakdown: nothing is wrong, there is just no
         // quota left to spend, and the one thing that fixes it is time.
         if (!(error instanceof UsageLimitError)) throw error;
-        if (!(await waitOutLimit(error, next, context))) return;
+        if (!(await waitOutLimit(error, next, startedAt, context))) return;
       }
     }
     context.run.state = "completed";
@@ -604,6 +676,73 @@ function theNightsOutcome(context: RunContext): SupervisorEvent {
 }
 
 /**
+ * Sits out the hour an armed run was told to begin at, and answers whether it
+ * should go on. A run given no hour begins the moment it is started.
+ *
+ * The user overtakes the clock here as they do in a limit wait: resuming an armed
+ * run begins it now, and pausing or stopping one ends it before it has run a
+ * thing. There is no Attempt in flight for any of them to wait on.
+ */
+async function waitForItsHour(context: RunContext): Promise<boolean> {
+  const { startAt } = context;
+  if (startAt === undefined) return true;
+  // Taken off first: however this wait ends, the hour has been dealt with, and a
+  // run picked up again afterwards is never armed a second time.
+  context.startAt = undefined;
+
+  const told = await sleepThrough(context, startAt);
+  if (told === "paused" || told === "stopped") return false;
+
+  context.run.state = "running";
+  context.run.resumeAt = null;
+
+  // Hours went by between the arming and the hour, and the project was the user's
+  // for every one of them. Work left lying about at bedtime would otherwise be
+  // swept into the first Checkpoint as if a Run had written it.
+  await refuseUncommitted(context.repository, context.project.directory);
+  return true;
+}
+
+/**
+ * Sleeps until the given moment with the run's controls still live, and answers
+ * what the user did with it — nothing at all when the wait ran its own course.
+ */
+async function sleepThrough(context: RunContext, until: Date): Promise<WaitEnding | undefined> {
+  const woken = new AbortController();
+  const wait: Wait = { wake: () => woken.abort(), told: undefined };
+  context.waiting = wait;
+
+  try {
+    await context.clock.sleepUntil(until, woken.signal);
+  } finally {
+    context.waiting = undefined;
+  }
+
+  return wait.told;
+}
+
+/** What the run has spent so far, which is what the Safety stops are read against. */
+function soFar(context: RunContext, startedAt: Date): RunSoFar {
+  return {
+    startedAt,
+    now: context.clock.now(),
+    ticketsRun: context.ticketsRun,
+    failuresInARow: context.failuresInARow,
+  };
+}
+
+/**
+ * Ends the run at a Safety stop. Stopped rather than failed, and stopped rather
+ * than completed: nothing broke, and the queue was not run out. Everything the
+ * run finished stands on its branch, and nothing picks the rest up by itself —
+ * a stop the user set in advance is still the user's own stop.
+ */
+function stopForSafety(context: RunContext, reached: string): void {
+  context.run.stoppedBy = reached;
+  context.run.state = "stopped";
+}
+
+/**
  * Sits out a usage limit and answers whether the run should carry on. Waiting is
  * the whole treatment: the ticket was not attempted, nothing is held against it,
  * and when the wait is over the loop simply has it again. A wait that runs its
@@ -618,6 +757,7 @@ function theNightsOutcome(context: RunContext): SupervisorEvent {
 async function waitOutLimit(
   limit: UsageLimitError,
   queued: Queued,
+  startedAt: Date,
   context: RunContext,
 ): Promise<boolean> {
   const { run, clock } = context;
@@ -640,20 +780,18 @@ async function waitOutLimit(
   run.error = messageOf(limit);
   run.resumeAt = resumeAt.toISOString();
 
-  const woken = new AbortController();
-  const wait: LimitWait = { wake: () => woken.abort(), told: undefined };
-  context.waiting = wait;
   announceLongWait(spell, resumeAt, queued, context);
 
-  try {
-    await clock.sleepUntil(resumeAt, woken.signal);
-  } finally {
-    context.waiting = undefined;
-  }
+  // A run may not sit out a limit past the hour its own time is up, so the wait
+  // ends at whichever comes first. Waking early settles nothing by itself: the
+  // loop reads the Safety stops again, and stops the run if that is what they
+  // say. What the run reports meanwhile is still the limit's own hour, because
+  // that is the hour it means to try at.
+  const told = await sleepThrough(context, soonest(resumeAt, runsUntil(context.safety, startedAt)));
 
   // Whatever the clock says, the user's word is what the run does. A resume is
   // them agreeing with the clock early, so only the other two end the run here.
-  if (wait.told === "paused" || wait.told === "stopped") return false;
+  if (told === "paused" || told === "stopped") return false;
 
   run.resumeAt = null;
   run.state = "running";
@@ -662,6 +800,11 @@ async function waitOutLimit(
   // quota is still gone the next one is more of the same wait, and how long the
   // whole of it has run is the only thing that says it is a long one.
   return true;
+}
+
+/** The earlier of two moments, one of which may not exist at all. */
+function soonest(moment: Date, other: Date | undefined): Date {
+  return other !== undefined && other.getTime() < moment.getTime() ? other : moment;
 }
 
 /**
@@ -702,11 +845,20 @@ async function attemptTicket(queued: Queued, context: RunContext): Promise<void>
     refusal = await attempt(queued, feedbackOn(refusal), context);
   }
 
+  // The run's own tally, kept in the one place both endings are known. A ticket a
+  // usage limit interrupted never reaches here: it was not run, and it costs the
+  // run's allowance nothing.
+  context.ticketsRun += 1;
+
   if (refusal !== undefined) {
+    context.failuresInARow += 1;
     await failTicket(queued, refusal.reason, context);
     return;
   }
 
+  // One ticket working is the whole of the evidence that the project is not
+  // systematically broken, which is all the failure stop was ever counting.
+  context.failuresInARow = 0;
   await checkpoint(queued, context);
 }
 

@@ -10,6 +10,8 @@ const SOURCE_SHAPE =
 const QUEUE_SHAPE =
   'An edited queue looks like { "queue": { "exclude": ["03-search-ui"], "order": ["02-add-search"] } }';
 
+const START_AT_SHAPE = 'An hour to begin at looks like { "startAt": "2026-07-30T23:00:00Z" }';
+
 export type Read<T> = { ok: true; value: T } | { ok: false; message: string };
 
 /** Says both ways a request could have been given what it turned out to need. */
@@ -85,6 +87,24 @@ export function readQueueEdit(body: unknown): Read<QueueEdit> {
   if (!order.ok) return order;
 
   return { ok: true, value: { exclude: exclude.value, order: order.value } };
+}
+
+/**
+ * The hour the run is to begin at, for one armed in the evening for the night.
+ * Saying nothing is asking for a run that begins now. An hour nobody can read is
+ * refused on the spot: a run armed for a time that means nothing is a run that
+ * never happens, and finding that out in the morning is finding it out too late.
+ */
+export function readStartAt(body: unknown): Read<Date | undefined> {
+  const named = asRecord(body)?.startAt;
+  if (named === undefined) return { ok: true, value: undefined };
+
+  const at = typeof named === "string" ? new Date(named) : new Date(Number.NaN);
+  if (Number.isNaN(at.getTime())) {
+    return { ok: false, message: `"startAt" must be a time. ${START_AT_SHAPE}` };
+  }
+
+  return { ok: true, value: at };
 }
 
 function readTicketIds(value: unknown, field: string): Read<string[]> {

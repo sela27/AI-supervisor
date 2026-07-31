@@ -36,14 +36,16 @@ export const DASHBOARD_SCRIPT = String.raw`
   };
 
   /**
-   * What a queue waiting out a usage limit says. It is the state that most looks
-   * broken and least is: nothing is printing, no ticket is moving, and the only
-   * thing that tells a reader at 3am to go back to bed is the hour it means to
-   * start again. Kept apart from the instruction pill because nobody asked for
-   * this one — a limit is not something the run was told to do.
+   * What a queue that is not working says about the hour it means to be. These
+   * are the states that most look broken and least are: nothing is printing, no
+   * ticket is moving, and the only thing that tells a reader at 3am to go back to
+   * bed is the hour. Kept apart from the instruction pill because a limit is not
+   * something the run was told to do — and an armed run is waiting for an hour
+   * rather than on its way to a boundary.
    */
   function waitingWord(queue) {
     if (!queue.resumeAt) return "";
+    if (queue.state === "armed") return "armed — starting at " + clockTime(queue.resumeAt);
     return "waiting for the limit — resuming at " + clockTime(queue.resumeAt);
   }
 
@@ -133,10 +135,15 @@ export const DASHBOARD_SCRIPT = String.raw`
     // troubles, and both are things the reader has to be told about. A usage
     // limit is neither: the run says so on its own pill, and painting it in the
     // colour of a failure would be the one thing this Supervisor must never say
-    // about a limit.
-    const trouble = (queue.resumeAt ? "" : queue.error) || queue.pushFailure;
+    // about a limit. A Safety stop comes first of all — it is the reason a night
+    // that was meant to run to the end is sitting there half done.
+    const stopped = queue.stoppedBy;
+    const trouble = stopped || (queue.resumeAt ? "" : queue.error) || queue.pushFailure;
     notice.textContent = trouble || "";
     notice.hidden = !trouble;
+    // And a Safety stop is not a failure either: the run did exactly what this
+    // instance told it to do, so it is not painted in the colour of one.
+    notice.dataset.kind = stopped ? "stop" : "trouble";
 
     showControls(queue);
 
@@ -151,11 +158,14 @@ export const DASHBOARD_SCRIPT = String.raw`
    */
   function showControls(queue) {
     const running = queue.state === "running";
-    // A run waiting out a usage limit is already between tickets, so it can be
-    // told anything and acts on it at once — including a pause, which a run that
-    // is only sitting still would otherwise have no way to be given.
-    const waiting = queue.state === "paused-on-limit";
-    // A run the user paused and one the usage limit paused are picked up the
+    // A run waiting for something — a limit to lift, or the hour it was armed
+    // for — is already between tickets, so it can be told anything and acts on it
+    // at once, including a pause a run that is only sitting still would otherwise
+    // have no way to be given.
+    const onLimit = queue.state === "paused-on-limit";
+    const armed = queue.state === "armed";
+    const waiting = onLimit || armed;
+    // A run the user paused and one something else is holding are picked up the
     // same way; only the reason they stopped differs.
     const held = queue.state === "paused" || waiting;
     // Asking again for what has already been asked for does nothing, so it is
@@ -164,11 +174,12 @@ export const DASHBOARD_SCRIPT = String.raw`
 
     pause.hidden = !((running && queue.instruction === null) || waiting);
     resume.hidden = !(held || pausing);
-    // What the button will actually do, which is not the same thing three times:
+    // What the button will actually do, which is not the same thing four times:
     // a run that is waiting has somewhere to be already, and pressing this only
     // asks it to go there now.
     if (pausing) resume.textContent = "Cancel pause";
-    else if (waiting) resume.textContent = "Try now";
+    else if (onLimit) resume.textContent = "Try now";
+    else if (armed) resume.textContent = "Start now";
     else resume.textContent = "Resume";
     stop.hidden = !(held || (running && queue.instruction !== "stop"));
   }

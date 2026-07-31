@@ -60,6 +60,8 @@ h2 { font-size: 0.8rem; margin: 0 0 0.75rem; text-transform: uppercase; letter-s
 .pill[data-state="completed"] { color: var(--succeeded); border-color: var(--succeeded); }
 .pill[data-state="failed"] { color: var(--failed); border-color: var(--failed); }
 .pill[data-state="paused-on-limit"] { color: var(--running); border-color: var(--running); }
+/* Armed is a run about to work, not one that has stopped: the working colour. */
+.pill[data-state="armed"] { color: var(--running); border-color: var(--running); }
 
 .instruction { color: var(--running); border-color: var(--running); text-transform: none; letter-spacing: 0; }
 .pill[hidden] { display: none; }
@@ -88,6 +90,8 @@ h2 { font-size: 0.8rem; margin: 0 0 0.75rem; text-transform: uppercase; letter-s
 .ticket-control { margin: 0 0.75rem 0.6rem; }
 
 .notice { margin: 0; padding: 0.7rem 1rem; background: rgba(209, 88, 79, 0.14); color: var(--failed); font-size: 0.9rem; }
+/* A Safety stop is the instance doing what it was told, so it is not a failure. */
+.notice[data-kind="stop"] { background: rgba(216, 165, 58, 0.14); color: var(--running); }
 .notice[hidden] { display: none; }
 
 main { display: grid; gap: 1rem; padding: 1rem; }

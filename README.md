@@ -53,6 +53,11 @@ below.
     "webhook": "https://ntfy.sh/pick-your-own-topic",
     "on": {}
   },
+  "safety": {
+    "maxTickets": null,
+    "maxRuntimeMinutes": null,
+    "consecutiveFailures": 3
+  },
   "project": {
     "directory": "/path/to/project",
     "verify": ["npm run typecheck", "npm test"],
@@ -104,8 +109,9 @@ image it was built from:
 | `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
 | `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
 
-The ticket source, the project, the attempt budget and the notification settings have no
-environment variables: they are what an instance _is_, and the file is where they belong.
+The ticket source, the project, the attempt budget, the notification settings and the safety
+stops have no environment variables: they are what an instance _is_, and the file is where
+they belong.
 
 ## Previewing a queue
 
@@ -225,9 +231,31 @@ the run ends, so the branch is there to review.
 A start request takes the same `queue` edit the preview does, so the queue you arranged is
 the queue that runs.
 
+A run can be armed in the evening for an hour later that night:
+
+```bash
+curl -X POST localhost:4317/api/queue/start -H 'content-type: application/json' -d '{"startAt":"2026-07-30T23:00:00Z"}'
+```
+
+An armed run is a run: its branch is cut and its Queue is settled the moment it is armed, so
+anything that would have refused it — a dirty working tree, an impossible queue edit, a
+source that cannot be read — is refused while you are still looking at the terminal rather
+than found to be true at eleven. The project is left on the run's branch from then on, so
+whatever you commit before bed is what the night starts from. What you _don't_ commit is
+checked again at the hour, and an armed run that wakes to a dirty working tree ends as
+`failed` rather than sweeping your evening's work into a Checkpoint as if Claude had written
+it.
+
+An hour that has already gone by is a run that starts now, and one written as something other
+than a time answers `400`. Stopping an armed run ends it; pausing one takes the arming off,
+so resuming afterwards begins the run there and then rather than putting the hour back —
+resume means "now" on every waiting run in this Supervisor. `startAt` belongs to the one run
+that names it: there is no instance setting for it, and nothing here runs on a repeating
+timetable.
+
 The reply carries the run's id and branch. `GET /api/queue` reports the queue's state
-(`idle`, `running`, `paused`, `stopped`, `completed`, `paused-on-limit`, or `failed` when the
-run itself broke down) and every
+(`idle`, `armed`, `running`, `paused`, `stopped`, `completed`, `paused-on-limit`, or `failed`
+when the run itself broke down) and every
 ticket's state (`pending`, `running`, `succeeded`, `failed`, `skipped`, or `done` when the
 source already reported it finished), so a run can be watched from the moment it starts.
 Tickets run strictly one at a time, and so do runs: starting a second while one is running,
@@ -275,9 +303,11 @@ doing. Resuming a run that has been asked to pause but has not got there yet tak
 instruction back. A stopped run leaves everything it finished standing, on a branch with
 nothing uncommitted around it; nothing picks it up again.
 
-A run waiting out a usage limit is the exception: it is already between tickets, so a pause
-or a stop given during the wait happens at once, and a resume has it try the limit now rather
-than at the hour it was told to expect quota back. It needs none of them — see
+A run that is waiting is the exception, and there are two kinds: one waiting out a usage
+limit, and one armed for an hour that has not come. Both are already between tickets, so a
+pause or a stop given during the wait happens at once, and a resume has the waiting one try
+the limit now and the armed one begin now, rather than at the hour either was told. A run
+waiting out a limit needs none of them — see
 [When a usage limit is hit](#when-a-usage-limit-is-hit) — the run picks itself up.
 
 **Retry** puts a failed ticket back on the queue along with everything that was only skipped
@@ -291,6 +321,46 @@ was a decision rather than a consequence.
 A control the run cannot obey — pausing what is not running, retrying what did not fail —
 answers `409` and changes nothing. One naming a ticket the run does not have answers `404`.
 
+## How far a run may go on its own
+
+The point of the Supervisor is that nobody is watching, which is also the risk: a project
+that is broken in some way every ticket runs into will fail every ticket it is given, and
+spend the whole of a week's quota proving it. Three safety stops bound one run, and each is
+the instance's own to set:
+
+| Setting                      | Default | What it stops                                           |
+| ---------------------------- | ------- | ------------------------------------------------------- |
+| `safety.maxTickets`          | none    | A run once it has run that many tickets                   |
+| `safety.maxRuntimeMinutes`   | none    | A run once it has been going that long                    |
+| `safety.consecutiveFailures` | `3`     | A run once that many tickets have failed one after another |
+
+```json
+{ "safety": { "maxTickets": 8, "maxRuntimeMinutes": 480, "consecutiveFailures": 3 } }
+```
+
+Each takes a whole number, or `null` for a stop this instance does not want — `null` is how a
+stop is switched off, because a stop switched off on purpose is not the same as one the file
+never mentioned, and the failure stop is on to begin with.
+
+A run that reaches one is **stopped**, at a ticket boundary like every other ending: the
+Attempt under way is never cut off half-way, everything the run finished stands on its
+branch, and the reason appears in the queue's `stoppedBy` field and on the dashboard. Nothing
+picks it up again — a stop set in advance is still your own stop, so resuming or retrying it
+answers `409` exactly as it does for a run you stopped by hand. What it never reached is left
+`pending` and unblamed, for a run tomorrow to have.
+
+The failure count starts again at every ticket that works: three refusals in a row is a
+project that is broken rather than a ticket that is, and one ticket succeeding is the whole
+of the evidence that it is not. A ticket a usage limit interrupted counts for nothing — it
+was not run, and it costs neither the ticket's attempt budget nor the run's allowance.
+
+`maxRuntimeMinutes` is wall clock from the moment the run begins working, and it is the one
+stop that can end a wait rather than a ticket: a run sitting out a weekly limit that would
+outlast its own night stops instead of sleeping until Thursday. Wall clock means exactly
+that — a run you paused overnight and resumed in the morning has been going all night, and
+stops at its first boundary saying so. The hours a run spent armed are not among them: it was
+not working, and waiting for midnight costs the night nothing.
+
 ## The dashboard
 
 The Supervisor serves its own dashboard at `/`, on the same port as the API — one address
@@ -303,13 +373,17 @@ open http://localhost:4317
 It shows the queue's state and its branch, every ticket's state, the output of the Attempt
 in flight as it is printed, and — on any ticket you open — that ticket's Attempts, each with
 its outcome, its failure summary and its whole log. A queue waiting out a usage limit says
-when it will be back, which is the one state where nothing prints, nothing moves, and nothing
-is wrong.
+when it will be back, and an armed one says the hour it starts at — the two states where
+nothing prints, nothing moves, and nothing is wrong. A run a safety stop ended says which
+one, in the colour of a run that is working rather than of one that failed, because that is
+what it did.
 
 It drives the run too, with the controls above: Pause, Resume and Stop in the header, and
-Retry or Take it out on the ticket they belong to. With nothing under way the page offers a
-Ticket Source and a preview of the queue it would build, where tickets can be left out or
-moved before the run starts. Every edit goes back through the preview, so an order the
+Retry or Take it out on the ticket they belong to. Resume reads "Try now" on a run waiting
+out a limit and "Start now" on an armed one — the same control, and not the same thing three
+times. With nothing under way the page offers a Ticket Source, an hour to start at (empty
+starts now, and the field is in your own time), and a preview of the queue it would build,
+where tickets can be left out or moved before the run starts. Every edit goes back through the preview, so an order the
 blocking edges forbid is refused and explained rather than applied — the list on the page is
 always one you could press Start on.
 
@@ -447,7 +521,9 @@ ticket is then run from scratch, with its whole attempt budget intact, and the r
 down the queue.
 
 A five-hour window and a weekly cap are the same mechanism at different lengths: a wait of
-days is a wait. Once a limit has held the run up for more than two hours you are
+days is a wait — unless the run's own `maxRuntimeMinutes` is up before the quota is back, in
+which case [the safety stop](#how-far-a-run-may-go-on-its-own) ends the wait and the run with
+it. Once a limit has held the run up for more than two hours you are
 [told about it](#being-told-when-something-matters) — counted from when the limit first
 stopped the run, so a cap that reported no reset time and is being looked at every half hour
 still reaches you rather than being sat through in silence. You are told once, however many

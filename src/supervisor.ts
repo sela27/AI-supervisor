@@ -65,6 +65,7 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
       options.notifier ?? webhookNotifier(config.notifications.webhook),
     ),
     attemptBudget: config.attemptBudget,
+    safety: config.safety,
   });
   const app = buildApp({
     storage,

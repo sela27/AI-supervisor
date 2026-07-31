@@ -32,6 +32,9 @@ test("an instance with no config file to read keeps every default", async () => 
     // Willing to say anything, with nowhere to say it: pointing an instance at a
     // webhook is the whole of what it takes to start being told.
     notifications: { enabled: true, on: {} },
+    // The queue is the queue and the night is the night; the one thing an
+    // unconfigured instance will not sit through is a project that is broken.
+    safety: { maxTickets: null, maxRuntimeMinutes: null, consecutiveFailures: 3 },
     // Nothing to fall back on: a start request must say everything itself.
     defaults: {},
   });
@@ -51,6 +54,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
       webhook: "https://ntfy.sh/my-topic",
       on: { "long-wait": false },
     },
+    safety: { maxTickets: 8, maxRuntimeMinutes: 480, consecutiveFailures: 2 },
     project: {
       directory: "./app",
       verify: ["npm run typecheck", "npm test"],
@@ -72,6 +76,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
       webhook: "https://ntfy.sh/my-topic",
       on: { "long-wait": false },
     },
+    safety: { maxTickets: 8, maxRuntimeMinutes: 480, consecutiveFailures: 2 },
     defaults: {
       source: { type: "local", directory: join(cwd, "tickets") },
       projectDirectory: join(cwd, "app"),
@@ -248,6 +253,37 @@ test("an attempt budget that is not a number of attempts is refused", async () =
 
   const written = await instanceWith({ attemptBudget: "two" });
   expect(() => loadSupervisorConfig({ cwd: written, env: {} })).toThrow(/attemptBudget/);
+});
+
+test("a Safety stop switched off on purpose is not one nobody mentioned", async () => {
+  const cwd = await instanceWith({ safety: { consecutiveFailures: null } });
+
+  const config = loadSupervisorConfig({ cwd, env: {} });
+
+  // An instance that wants a broken night run out to the end has to be able to
+  // say so — and saying so must not read as having said nothing, which is what
+  // would quietly hand back the default of three.
+  expect(config.safety.consecutiveFailures).toBeNull();
+});
+
+test("a Safety stop set to a number that stops nothing is refused", async () => {
+  // Zero would be a run that stopped before it began, and half a ticket is not a
+  // thing — either is a number that was meant to say something else.
+  const none = await instanceWith({ safety: { maxTickets: 0 } });
+  expect(() => loadSupervisorConfig({ cwd: none, env: {} })).toThrow(/maxTickets/);
+
+  const part = await instanceWith({ safety: { maxRuntimeMinutes: 12.5 } });
+  expect(() => loadSupervisorConfig({ cwd: part, env: {} })).toThrow(/maxRuntimeMinutes/);
+
+  // An hour written the way a person says it is not a number of minutes.
+  const written = await instanceWith({ safety: { maxRuntimeMinutes: "8h" } });
+  expect(() => loadSupervisorConfig({ cwd: written, env: {} })).toThrow(/maxRuntimeMinutes/);
+});
+
+test("a Safety stop that does not exist says which ones there are", async () => {
+  const cwd = await instanceWith({ safety: { maxAttempts: 4 } });
+
+  expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/maxTickets/);
 });
 
 test("a project may name its directory and leave verification to the start request", async () => {

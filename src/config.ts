@@ -5,6 +5,7 @@ import {
   type QueueRunDefaults,
 } from "./config-file.js";
 import type { NotificationSettings } from "./notifications/settings.js";
+import type { SafetyStops } from "./queue/safety.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
 
 // Where the defaults come from is the file's business; what they are is every
@@ -22,6 +23,8 @@ export interface SupervisorConfig {
   runner: ClaudeCodeRunnerOptions;
   /** What this instance tells somebody about, and where it tells them. */
   notifications: NotificationSettings;
+  /** How far one run of this instance may go on its own before it stops. */
+  safety: SafetyStops;
   /** What a start request falls back to when it does not say for itself. */
   defaults: QueueRunDefaults;
 }
@@ -43,6 +46,14 @@ const DEFAULTS = {
   permissionMode: "bypassPermissions",
   /** On, so that pointing an instance at a webhook is all it takes to be told. */
   notificationsEnabled: true,
+  /** The queue is the queue: how far a run gets is the work's to decide, not a number's. */
+  maxTickets: null,
+  maxRuntimeMinutes: null,
+  /**
+   * Three tickets refused one after another is a project that is broken rather
+   * than a ticket that is, and there is no sense spending the night proving it.
+   */
+  consecutiveFailures: 3,
 } as const;
 
 /**
@@ -80,8 +91,24 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
         : { webhook: file.notifications.webhook }),
       on: file.notifications?.on ?? {},
     },
+    safety: {
+      maxTickets: stopSetTo(file.safety?.maxTickets, DEFAULTS.maxTickets),
+      maxRuntimeMinutes: stopSetTo(file.safety?.maxRuntimeMinutes, DEFAULTS.maxRuntimeMinutes),
+      consecutiveFailures: stopSetTo(
+        file.safety?.consecutiveFailures,
+        DEFAULTS.consecutiveFailures,
+      ),
+    },
     defaults: file.defaults,
   };
+}
+
+/**
+ * What the file set one Safety stop to, `null` included. A stop switched off on
+ * purpose is not a stop nobody mentioned, and `??` cannot tell them apart.
+ */
+function stopSetTo(said: number | null | undefined, fallback: number | null): number | null {
+  return said === undefined ? fallback : said;
 }
 
 /**

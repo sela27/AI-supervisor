@@ -91,6 +91,23 @@ test("a queue waiting out a limit says so, and says when it will be back", async
   expect(page).toContain("Try now");
 });
 
+test("an armed run says its hour, and a run a stop ended says which stop", async () => {
+  supervisor = await startTestSupervisor();
+
+  const page = await readPage(supervisor);
+
+  // The other state where nothing prints, nothing moves and nothing is wrong —
+  // and, like a waiting run, one the page can start early rather than only watch.
+  expect(page).toContain("armed — starting at");
+  expect(page).toContain("Start now");
+  // The hour is picked from the same panel the queue is arranged in.
+  expect(page).toContain(`id="start-at"`);
+  // And a night sitting there half done says why, in the colour of a run that was
+  // working rather than of one that failed, because that is what it was doing.
+  expect(page).toContain("stoppedBy");
+  expect(page).toContain(`[data-kind="stop"]`);
+});
+
 test("a watcher who joins an idle Supervisor is told the queue is idle at once", async () => {
   supervisor = await startTestSupervisor();
 
