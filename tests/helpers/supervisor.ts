@@ -1,6 +1,6 @@
 import type { Clock } from "../../src/clock.js";
 import { loadSupervisorConfig } from "../../src/config.js";
-import type { EventSink } from "../../src/events.js";
+import type { Notifier } from "../../src/notifications/notifier.js";
 import type { Runner } from "../../src/runner/runner.js";
 import { startSupervisor } from "../../src/supervisor.js";
 import type { GhCommand } from "../../src/tickets/gh.js";
@@ -34,8 +34,11 @@ export interface TestSupervisorOptions {
    * milliseconds. Left out, the Supervisor runs on real time.
    */
   clock?: Clock;
-  /** Where the Supervisor's own events go — the Notifier's seam, stood in for. */
-  onEvent?: EventSink;
+  /**
+   * The Notifier seam: what the Supervisor would have sent to a phone, captured
+   * instead. Whether anything is sent at all is still the config file's to decide.
+   */
+  notifier?: Notifier;
   /**
    * A `gh` of the test's own, standing in for the CLI so a queue of GitHub issues
    * is run without a live repository anywhere near it.
@@ -57,7 +60,7 @@ export async function startTestSupervisor(
     config: { ...config, dataDir, port: 0, host: "127.0.0.1" },
     runner: options.runner,
     clock: options.clock,
-    onEvent: options.onEvent,
+    notifier: options.notifier,
     gh: options.gh,
   });
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
 import { DAY, HOUR, MINUTE, testClock, type TestClock } from "./helpers/clock.js";
-import { recordEvents, type EventRecorder } from "./helpers/event-sink.js";
+import { fakeNotifier, type FakeNotifier } from "./helpers/notifier.js";
 import { createTestProject, type TestProject } from "./helpers/project.js";
 import {
   control,
@@ -60,7 +60,7 @@ interface LimitedRun {
  */
 async function startLimitedRun(
   behave: (project: TestProject) => FakeRunnerBehaviour,
-  recorder?: EventRecorder,
+  told?: FakeNotifier,
 ): Promise<LimitedRun> {
   const clock = testClock(NOW);
   const project = await createTestProject({
@@ -71,7 +71,7 @@ async function startLimitedRun(
   const running = await startTestSupervisor({
     runner,
     clock,
-    ...(recorder === undefined ? {} : { onEvent: recorder.onEvent }),
+    ...(told === undefined ? {} : { notifier: told.notifier }),
   });
   supervisor = running;
 
@@ -188,34 +188,30 @@ test("a limit that named no reset time is probed until the quota is back", async
 });
 
 test("a wait of hours is something somebody is told about", async () => {
-  const recorder = recordEvents();
+  const told = fakeNotifier();
   const { running } = await startLimitedRun(
     (project) => stoppedByTheLimit(project, RESET_AT),
-    recorder,
+    told,
   );
 
-  const waiting = await waitingQueue(running);
+  await waitingQueue(running);
 
   // Four and a half hours of silence is not something to leave a person to work
   // out from a page that has stopped changing.
-  expect(recorder.of("long-wait")).toEqual([
-    {
-      type: "long-wait",
-      runId: waiting.id,
-      ticketId: "01-boot-the-app",
-      resumeAt: after(RESET_AT, MARGIN),
-    },
-  ]);
+  const said = told.about("long-wait");
+  expect(said).toHaveLength(1);
+  expect(said[0]?.body).toContain("01-boot-the-app");
+  expect(said[0]?.body).toContain(after(RESET_AT, MARGIN));
 });
 
 test("a limit with no reset time is not silently sat through for days", async () => {
-  const recorder = recordEvents();
-  const { running, clock } = await startLimitedRun((project) => limitedFor(project, 6, null), recorder);
+  const told = fakeNotifier();
+  const { running, clock } = await startLimitedRun((project) => limitedFor(project, 6, null), told);
 
   await waitingQueue(running);
   // Nothing is ever projected here — there is no reset time to project from — so
   // the only thing that says this wait is a long one is how long it has gone on.
-  expect(recorder.of("long-wait")).toEqual([]);
+  expect(told.about("long-wait")).toEqual([]);
 
   // Half an hour at a time, until the looking has itself taken two hours.
   for (let look = 0; look < 5; look += 1) {
@@ -226,16 +222,11 @@ test("a limit with no reset time is not silently sat through for days", async ()
   // Said once, however many more times the run looks: the person being told is
   // not watching, and telling them every half hour until Friday is worse than
   // not telling them at all.
-  expect(recorder.of("long-wait")).toEqual([
-    {
-      type: "long-wait",
-      runId: (await waitForQueue(running, () => true)).id,
-      ticketId: "01-boot-the-app",
-      // The fourth look is the one whose own half-hour carries the spell past two
-      // hours; the two after it say nothing.
-      resumeAt: after(NOW, 4 * PROBE_EVERY),
-    },
-  ]);
+  const said = told.about("long-wait");
+  expect(said).toHaveLength(1);
+  // The fourth look is the one whose own half-hour carries the spell past two
+  // hours; the two after it say nothing.
+  expect(said[0]?.body).toContain(after(NOW, 4 * PROBE_EVERY));
 });
 
 test("a pause given during the interrupted Attempt is not honoured a week late", async () => {
@@ -268,17 +259,17 @@ test("a pause given during the interrupted Attempt is not honoured a week late",
 });
 
 test("a wait of minutes is nobody's business", async () => {
-  const recorder = recordEvents();
+  const told = fakeNotifier();
   const soon = new Date(NOW.getTime() + 20 * MINUTE);
-  const { running, clock } = await startLimitedRun((project) => limitedFor(project, 1, soon), recorder);
+  const { running, clock } = await startLimitedRun((project) => limitedFor(project, 1, soon), told);
 
   await waitingQueue(running);
   clock.advance(HOUR);
   await waitForQueue(running, (queue) => queue.state === "completed");
 
-  // The run waited, resumed, and never said a word: a limit lifting before the
-  // next cup of tea is not a notification anyone thanks you for.
-  expect(recorder.of("long-wait")).toEqual([]);
+  // The run waited, resumed, and never said a word about it: a limit lifting
+  // before the next cup of tea is not a notification anyone thanks you for.
+  expect(told.about("long-wait")).toEqual([]);
 });
 
 test("resuming a waiting run tries now, rather than at the hour it was told", async () => {

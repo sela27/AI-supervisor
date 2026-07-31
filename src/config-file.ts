@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { messageOf } from "./errors.js";
+import { EVENT_TYPES } from "./events.js";
 import { asRecord } from "./json.js";
+import type { NotificationSettings } from "./notifications/settings.js";
+import { isWebhookUrl } from "./notifications/webhook.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
 import { isRepositoryName, type SourceSelection } from "./tickets/source.js";
 import { isVerification } from "./verification/verifier.js";
@@ -32,6 +35,8 @@ export interface FileSettings {
   model?: string;
   permissionMode?: ClaudeCodeRunnerOptions["permissionMode"];
   attemptBudget?: number;
+  /** Whatever the file said about being told things; the rest is defaulted after. */
+  notifications?: Partial<NotificationSettings>;
   defaults: QueueRunDefaults;
 }
 
@@ -43,10 +48,12 @@ const FILE_SETTINGS = [
   "attemptBudget",
   "runner",
   "source",
+  "notifications",
   "project",
 ];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
 const SOURCE_SETTINGS = ["type", "directory", "repository"];
+const NOTIFICATION_SETTINGS = ["enabled", "webhook", "on"];
 const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
 
 export const HIGHEST_PORT = 65_535;
@@ -89,6 +96,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
 
   const runner = section(path, settings.runner, RUNNER_SETTINGS, "runner");
   const source = section(path, settings.source, SOURCE_SETTINGS, "source");
+  const notifications = section(path, settings.notifications, NOTIFICATION_SETTINGS, "notifications");
   const project = section(path, settings.project, PROJECT_SETTINGS, "project");
 
   const dataDir = directory(path, settings.dataDir, "dataDir");
@@ -99,6 +107,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const model = text(path, runner.model, "runner.model");
   const permissionMode = mode(path, runner.permissionMode);
   const ticketSource = sourceSelection(path, source);
+  const told = notificationSettings(path, notifications);
   const projectDirectory = directory(path, project.directory, "project.directory");
   const verify = commands(path, project.verify);
   const pushCheckpoints = flag(path, project.pushCheckpoints, "project.pushCheckpoints");
@@ -111,6 +120,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(model === undefined ? {} : { model }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(attemptBudget === undefined ? {} : { attemptBudget }),
+    ...(told === undefined ? {} : { notifications: told }),
     defaults: {
       ...(ticketSource === undefined ? {} : { source: ticketSource }),
       ...(projectDirectory === undefined ? {} : { projectDirectory }),
@@ -271,6 +281,46 @@ function sourceType(path: string, value: unknown): SourceSelection["type"] {
   throw new Error(
     `${setting(path, "source.type")} must be "local" or "github", got ${quote(value)}`,
   );
+}
+
+/**
+ * What this instance tells somebody about, and where it tells them. Nothing said
+ * about notifications at all is left undefined rather than defaulted here, so the
+ * defaults stay in the one place every other default lives.
+ */
+function notificationSettings(
+  path: string,
+  told: Record<string, unknown>,
+): Partial<NotificationSettings> | undefined {
+  const enabled = flag(path, told.enabled, "notifications.enabled");
+  const webhook = text(path, told.webhook, "notifications.webhook");
+  if (webhook !== undefined && !isWebhookUrl(webhook)) {
+    throw new Error(
+      `${setting(path, "notifications.webhook")} must be an http or https URL to post to ` +
+        `— https://ntfy.sh/your-topic is one — got ${quote(webhook)}`,
+    );
+  }
+  const on = eventSwitches(path, told.on);
+
+  if (enabled === undefined && webhook === undefined && on === undefined) return undefined;
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(webhook === undefined ? {} : { webhook }),
+    ...(on === undefined ? {} : { on }),
+  };
+}
+
+/** Which kinds of Event this instance was told to be silent about, and no more. */
+function eventSwitches(path: string, value: unknown): NotificationSettings["on"] | undefined {
+  if (value === undefined) return undefined;
+
+  const record = section(path, value, EVENT_TYPES, "notifications.on");
+  const on: NotificationSettings["on"] = {};
+  for (const type of EVENT_TYPES) {
+    const said = flag(path, record[type], `notifications.on.${type}`);
+    if (said !== undefined) on[type] = said;
+  }
+  return on;
 }
 
 function wholePort(path: string, value: unknown): number | undefined {

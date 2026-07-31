@@ -48,6 +48,11 @@ below.
     "type": "local",
     "directory": "./.scratch/my-feature/issues"
   },
+  "notifications": {
+    "enabled": true,
+    "webhook": "https://ntfy.sh/pick-your-own-topic",
+    "on": {}
+  },
   "project": {
     "directory": "/path/to/project",
     "verify": ["npm run typecheck", "npm test"],
@@ -99,8 +104,8 @@ image it was built from:
 | `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
 | `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
 
-The ticket source, the project and the attempt budget have no environment variables: they
-are what an instance _is_, and the file is where they belong.
+The ticket source, the project, the attempt budget and the notification settings have no
+environment variables: they are what an instance _is_, and the file is where they belong.
 
 ## Previewing a queue
 
@@ -345,6 +350,56 @@ A project with nowhere to push says so once, and no push is attempted:
 
 Like the rest of the project, a start request can name `pushCheckpoints` for one run only.
 
+## Being told when something matters
+
+The dashboard is for when you are looking. Five moments are worth reaching you when you are
+not, and each posts to one webhook:
+
+| Event                | When                                                     | What it says                                                 |
+| -------------------- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| `queue-finished`     | The queue ran out of tickets to run                        | How many succeeded, failed and were skipped, and the branch    |
+| `ticket-failed`      | A ticket's every Attempt was refused                       | Which ticket, and what refused the last go                     |
+| `long-wait`          | A usage limit has held the run up for over two hours       | Which ticket is waiting, and when the run means to try again   |
+| `run-broke-down`     | The run stopped for something no ticket was to blame for   | What it could not get past                                     |
+| `supervisor-crashed` | The service itself is going down, run or no run            | What it went down on                                           |
+
+The last two are different failures. A run that broke down leaves the Supervisor standing —
+the API answers, the dashboard is up, and `GET /api/queue` reports `failed` with the reason.
+A crash is the service going out from under everything, which is the one notification worth
+waiting for: the process holds on until it has been sent, because nothing is left behind to
+report it.
+
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "webhook": "https://ntfy.sh/pick-your-own-topic",
+    "on": { "long-wait": false }
+  }
+}
+```
+
+There is no default webhook — an instance that names none says nothing, which is a perfectly
+good way to run. Pointing it at one is the whole of what it takes to start being told:
+`enabled` is already on, and every event is on until it is switched off by name. `enabled:
+false` silences the lot of them without you having to take the webhook out to do it.
+
+Each notification is a plain-text `POST`, headline first and the rest below it. That is
+exactly what [ntfy.sh](https://ntfy.sh) takes as it stands — subscribe to a topic of your own
+in the app and point `webhook` at `https://ntfy.sh/<that topic>` — and it is also what any
+other receiver can read without knowing anything about the Supervisor. The headline is a line
+of the body rather than a header of its own, so a ticket titled with an em dash or a word of
+Hebrew arrives intact. A webhook that is not an `http` or `https` URL stops the service from
+starting: a notification that cannot be delivered has nowhere to report that it wasn't.
+
+**Nothing ever waits for a notification, and nothing fails because of one.** It is posted and
+forgotten: a webhook that refuses, that is unreachable, or that accepts the connection and
+then says nothing at all costs the run neither a ticket nor a second — a notification is
+given ten seconds to be taken and is then abandoned where it stands. Which also means a
+notification that never arrives is not reported anywhere: the thing that would have told you
+is the thing that just failed. The one exception is `supervisor-crashed`, where there is no
+run left to hold up and nothing else left to say it.
+
 ## How a ticket is run
 
 Each ticket is one fresh headless Claude Code Run, launched through the Claude Agent SDK in
@@ -392,10 +447,11 @@ ticket is then run from scratch, with its whole attempt budget intact, and the r
 down the queue.
 
 A five-hour window and a weekly cap are the same mechanism at different lengths: a wait of
-days is a wait. Once a limit has held the run up for more than two hours it raises an event,
-which notifications will carry to your phone once they exist — counted from when the limit
-first stopped the run, so a cap that reported no reset time and is being looked at every half
-hour still reaches you rather than being sat through in silence. It is raised once.
+days is a wait. Once a limit has held the run up for more than two hours you are
+[told about it](#being-told-when-something-matters) — counted from when the limit first
+stopped the run, so a cap that reported no reset time and is being looked at every half hour
+still reaches you rather than being sat through in silence. You are told once, however many
+times the run goes and looks.
 
 Resuming by hand means "try now" rather than at the hour Claude named — useful when you know
 better than it did. Pausing or stopping during a wait takes effect on the spot: there is no
@@ -437,7 +493,9 @@ Every ticket that was waiting on the failure — directly or through another tic
 marked `skipped` and never attempted, with the blocker named in its `failure` field. Nothing
 is written back for a skipped ticket: it was never tried. Everything that was not waiting on
 the failure keeps running, so one bad ticket never ends the night; the run still finishes as
-`completed`, with the mixed statuses reported per ticket.
+`completed`, with the mixed statuses reported per ticket. Only the ticket that ran out of
+Attempts is [notified](#being-told-when-something-matters) — the tail behind it is a
+consequence, not news of its own.
 
 Because the reset destroys the working tree the Attempt ran in, the Attempt's log is kept in
 the Supervisor's own SQLite database instead:
@@ -462,10 +520,16 @@ npm test
 ```
 
 Tests boot the real service against a temporary data directory and drive it through the HTTP
-API — that is the seam every feature is tested at. Three things are substituted there: the
+API — that is the seam every feature is tested at. Four things are substituted there: the
 Runner, so no Claude Code is launched; the clock, so a limit wait of days is proved in
-milliseconds; and `gh`, so a queue of GitHub issues is run without a live repository. Git,
-the filesystem, SQLite and the verification commands are all real.
+milliseconds; `gh`, so a queue of GitHub issues is run without a live repository; and the
+Notifier, so what would have reached a phone is read without a byte of it leaving the
+machine. Git, the filesystem, SQLite and the verification commands are all real.
+
+Three things cannot be reached through that seam and are covered directly instead: reading an
+instance's settings, which happens before there is a service to ask; the production Runner,
+against recorded Runs; and the production Notifier, which is what every other test stands in
+for — that one posts to a real HTTP server on a port of its own.
 
 ## Building
 

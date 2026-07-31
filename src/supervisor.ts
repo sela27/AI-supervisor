@@ -5,8 +5,10 @@ import type { FastifyServerOptions } from "fastify";
 
 import { systemClock, type Clock } from "./clock.js";
 import type { SupervisorConfig } from "./config.js";
-import { noEvents, type EventSink } from "./events.js";
 import { buildApp } from "./http/app.js";
+import type { Notifier } from "./notifications/notifier.js";
+import { notifyOn } from "./notifications/sink.js";
+import { webhookNotifier } from "./notifications/webhook.js";
 import { createQueueEngine } from "./queue/engine.js";
 import type { Runner } from "./runner/runner.js";
 import { unavailableRunner } from "./runner/unavailable.js";
@@ -26,10 +28,11 @@ export interface SupervisorOptions {
    */
   clock?: Clock;
   /**
-   * Where the moments worth telling somebody about go. Nothing consumes them yet;
-   * notifications are their own ticket, and this is what they will be built on.
+   * What carries a notification to a phone. The configured webhook unless a test
+   * hands over one of its own — which is how a suite reads everything the
+   * Supervisor said without a byte of it leaving the machine.
    */
-  onEvent?: EventSink;
+  notifier?: Notifier;
   /**
    * How the Supervisor talks to GitHub. The real `gh` CLI unless a test hands
    * over one of its own, so a suite never reaches a live repository.
@@ -55,7 +58,12 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
     runner: options.runner ?? unavailableRunner(),
     storage,
     clock: options.clock ?? systemClock(),
-    onEvent: options.onEvent ?? noEvents,
+    // Whether an Event is worth telling anybody about is the settings' business
+    // either way; only the delivery is ever stood in for.
+    onEvent: notifyOn(
+      config.notifications,
+      options.notifier ?? webhookNotifier(config.notifications.webhook),
+    ),
     attemptBudget: config.attemptBudget,
   });
   const app = buildApp({

@@ -4,6 +4,7 @@ import {
   type FileSettings,
   type QueueRunDefaults,
 } from "./config-file.js";
+import type { NotificationSettings } from "./notifications/settings.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
 
 // Where the defaults come from is the file's business; what they are is every
@@ -19,6 +20,8 @@ export interface SupervisorConfig {
   attemptBudget: number;
   /** How this instance drives Claude Code. One instance, one project, one setting. */
   runner: ClaudeCodeRunnerOptions;
+  /** What this instance tells somebody about, and where it tells them. */
+  notifications: NotificationSettings;
   /** What a start request falls back to when it does not say for itself. */
   defaults: QueueRunDefaults;
 }
@@ -38,6 +41,8 @@ const DEFAULTS = {
   attemptBudget: 2,
   /** Nothing may stop to ask: the whole point is that nobody is there to answer. */
   permissionMode: "bypassPermissions",
+  /** On, so that pointing an instance at a webhook is all it takes to be told. */
+  notificationsEnabled: true,
 } as const;
 
 /**
@@ -67,6 +72,13 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
         envPermissionMode(env.SUPERVISOR_PERMISSION_MODE) ??
         file.permissionMode ??
         DEFAULTS.permissionMode,
+    },
+    notifications: {
+      enabled: file.notifications?.enabled ?? DEFAULTS.notificationsEnabled,
+      ...(file.notifications?.webhook === undefined
+        ? {}
+        : { webhook: file.notifications.webhook }),
+      on: file.notifications?.on ?? {},
     },
     defaults: file.defaults,
   };

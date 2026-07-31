@@ -76,5 +76,11 @@ The queue state entered when a usage limit is detected. A limit-interrupted Atte
 An Attempt made to find out whether the usage limit has lifted. A limit that named no reset time leaves nothing to wait for in particular, so the run goes and asks every so often. There is no cheaper way to ask than to try the ticket — and trying costs the ticket nothing, since a limit-interrupted Attempt is discarded and never held against it.
 
 **Event**:
-Something the Supervisor wants somebody told about, as distinct from the run state the Dashboard already shows: it is for reaching a person who is not looking. A long limit wait is one; a queue finishing, a ticket finally failing and the Supervisor crashing will be others.
+Something the Supervisor wants somebody told about, as distinct from the run state the Dashboard already shows: it is for reaching a person who is not looking. There are five — a queue finishing, a ticket finally failing, a long limit wait, a run breaking down under the Supervisor, and the Supervisor itself going down.
 _Avoid_: notification (that is what carries an event, not the event itself), message
+
+**Notification**:
+What carries an Event to a person who is not looking. A notification is never waited for and never answered: whether one is sent at all is the instance's own settings deciding, and one that cannot be delivered changes nothing about the run that raised it.
+
+**Notifier**:
+What delivers a Notification — one webhook, posted to and forgotten about. Tests substitute a fake, so a test suite reads everything the Supervisor said without any of it leaving the machine.

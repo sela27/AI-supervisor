@@ -29,6 +29,9 @@ test("an instance with no config file to read keeps every default", async () => 
     // One retry per ticket, as the glossary has it.
     attemptBudget: 2,
     runner: { permissionMode: "bypassPermissions" },
+    // Willing to say anything, with nowhere to say it: pointing an instance at a
+    // webhook is the whole of what it takes to start being told.
+    notifications: { enabled: true, on: {} },
     // Nothing to fall back on: a start request must say everything itself.
     defaults: {},
   });
@@ -43,6 +46,11 @@ test("the file carries every setting, so a run needs nothing but a start", async
     attemptBudget: 3,
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
     source: { type: "local", directory: "./tickets" },
+    notifications: {
+      enabled: true,
+      webhook: "https://ntfy.sh/my-topic",
+      on: { "long-wait": false },
+    },
     project: {
       directory: "./app",
       verify: ["npm run typecheck", "npm test"],
@@ -59,6 +67,11 @@ test("the file carries every setting, so a run needs nothing but a start", async
     logLevel: "debug",
     attemptBudget: 3,
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
+    notifications: {
+      enabled: true,
+      webhook: "https://ntfy.sh/my-topic",
+      on: { "long-wait": false },
+    },
     defaults: {
       source: { type: "local", directory: join(cwd, "tickets") },
       projectDirectory: join(cwd, "app"),
@@ -181,6 +194,32 @@ test("a source settled by a setting the other kind of source uses is refused", a
     type: "github",
     repository: "sela27/AI-supervisor",
   });
+});
+
+test("a webhook that could never be posted to is refused while somebody is reading", async () => {
+  // The one setting whose own failure has nowhere to be reported: a notification
+  // that cannot be delivered is a notification nobody hears about.
+  const typo = await instanceWith({ notifications: { webhook: "ntfy.sh/my-topic" } });
+  expect(() => loadSupervisorConfig({ cwd: typo, env: {} })).toThrow(/webhook/);
+
+  const wrongProtocol = await instanceWith({ notifications: { webhook: "ftp://example.test/x" } });
+  expect(() => loadSupervisorConfig({ cwd: wrongProtocol, env: {} })).toThrow(/webhook/);
+});
+
+test("a switch for an Event that does not exist says which ones there are", async () => {
+  const cwd = await instanceWith({ notifications: { on: { "ticket-skipped": false } } });
+
+  expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/ticket-failed/);
+});
+
+test("silence has to be asked for with a switch, not with a word that looks like one", async () => {
+  // `"false"` in quotes is a string, and a string is truthy: an instance meant to
+  // run silently would spend the night saying everything.
+  const written = await instanceWith({ notifications: { enabled: "false" } });
+  expect(() => loadSupervisorConfig({ cwd: written, env: {} })).toThrow(/enabled/);
+
+  const perEvent = await instanceWith({ notifications: { on: { "long-wait": "no" } } });
+  expect(() => loadSupervisorConfig({ cwd: perEvent, env: {} })).toThrow(/long-wait/);
 });
 
 test("verification that could never refuse an Attempt is refused itself", async () => {

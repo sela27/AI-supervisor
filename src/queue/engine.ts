@@ -1,6 +1,6 @@
 import type { Clock } from "../clock.js";
 import { messageOf } from "../errors.js";
-import type { EventSink } from "../events.js";
+import type { EventSink, SupervisorEvent } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
@@ -537,6 +537,8 @@ function dependentsOf(context: RunContext, ticketId: string): Queued[] {
  * the loop sits the limit out inside itself and then has the ticket again.
  */
 async function execute(context: RunContext): Promise<void> {
+  let brokeDown: string | undefined;
+
   try {
     for (;;) {
       const next = nextOnFrontier(context.queued);
@@ -566,9 +568,39 @@ async function execute(context: RunContext): Promise<void> {
   } catch (error) {
     // The repository moving under the run, the source going away: this queue did
     // not complete, and nothing it could do by itself would change that.
-    context.run.error = messageOf(error);
+    brokeDown = messageOf(error);
+    context.run.error = brokeDown;
     context.run.state = "failed";
   }
+
+  // Outside both, on purpose: the run has ended one way or the other, and telling
+  // somebody how must not be able to change which. A run that was paused, stopped
+  // or is still sitting out a limit returned long before here — none of those has
+  // ended, and there is nothing to say about a night that is not over.
+  context.onEvent(
+    brokeDown === undefined
+      ? theNightsOutcome(context)
+      : { type: "run-broke-down", runId: context.run.id, error: brokeDown },
+  );
+}
+
+/**
+ * How each ticket ended and where the work is — the whole of what somebody wants
+ * before opening anything. Tickets the Ticket Source already reported done are
+ * nobody's news: this run did not do them.
+ */
+function theNightsOutcome(context: RunContext): SupervisorEvent {
+  const counted = (state: TicketRunState): number =>
+    context.queued.filter(({ entry }) => entry.state === state).length;
+
+  return {
+    type: "queue-finished",
+    runId: context.run.id,
+    branch: context.run.branch,
+    succeeded: counted("succeeded"),
+    failed: counted("failed"),
+    skipped: counted("skipped"),
+  };
 }
 
 /**
@@ -894,6 +926,17 @@ async function verificationRefusal(
 async function failTicket(queued: Queued, reason: string, context: RunContext): Promise<void> {
   queued.entry.state = "failed";
   queued.entry.failure = reason;
+
+  // Said as soon as the ticket has run out of Attempts, before anything is
+  // written anywhere: the ticket has failed whether or not the Ticket Source
+  // turns out to be reachable, and a source that is not is its own bad news.
+  context.onEvent({
+    type: "ticket-failed",
+    runId: context.run.id,
+    ticketId: queued.ticket.id,
+    title: queued.ticket.title,
+    failure: reason,
+  });
 
   await context.source.markFailed(queued.ticket, reason);
   queued.failureRecorded = true;
