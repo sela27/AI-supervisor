@@ -2,6 +2,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { TicketSourceError, type TicketProblem } from "./errors.js";
+import type { TicketSource } from "./source.js";
 import {
   parseTicketFile,
   stripTicketNumberPrefix,
@@ -13,11 +14,31 @@ import {
 import type { Ticket } from "./ticket.js";
 
 /**
+ * A directory of ticket files as the tickets of one Queue — the source for a
+ * project whose tickets are scratch, or are kept beside the code they are about.
+ */
+export function localTicketSource(directory: string): TicketSource {
+  return {
+    discover: () => discoverLocalTickets(directory),
+
+    markDone: (ticket) => markLocalTicketDone(directory, ticket.id),
+
+    // The write-back is inside the Checkpoint already: the file was rewritten
+    // before the commit, and the commit swept it up along with the work.
+    recordCheckpoint: async () => {},
+
+    markFailed: (ticket, summary) => markLocalTicketFailed(directory, ticket.id, summary),
+
+    clearFailure: (ticket) => clearLocalTicketFailure(directory, ticket.id, ticket.status),
+  };
+}
+
+/**
  * Reads a directory of local ticket files as the tickets of one Queue. Every
  * problem in the directory is reported together — a half-readable Ticket Source
  * is never turned into a half-Queue.
  */
-export async function discoverLocalTickets(directory: string): Promise<Ticket[]> {
+async function discoverLocalTickets(directory: string): Promise<Ticket[]> {
   const path = resolve(directory);
   const fileNames = await listTicketFiles(path);
 
@@ -47,7 +68,7 @@ export async function discoverLocalTickets(directory: string): Promise<Ticket[]>
  * Records a finished ticket where done-ness belongs — in the Ticket Source itself,
  * so a restarted Supervisor still agrees about what is done.
  */
-export async function markLocalTicketDone(directory: string, ticketId: string): Promise<void> {
+async function markLocalTicketDone(directory: string, ticketId: string): Promise<void> {
   await rewriteTicketFile(directory, ticketId, (contents) => withStatus(contents, "done"));
 }
 
@@ -56,7 +77,7 @@ export async function markLocalTicketDone(directory: string, ticketId: string): 
  * went wrong, so the morning's triage starts from the ticket itself. Writing it
  * again over an earlier failure replaces that account rather than adding to it.
  */
-export async function markLocalTicketFailed(
+async function markLocalTicketFailed(
   directory: string,
   ticketId: string,
   summary: string,
@@ -72,7 +93,7 @@ export async function markLocalTicketFailed(
  * the status the Ticket Source gave it, and no account of a failure it is being
  * given the chance to undo.
  */
-export async function clearLocalTicketFailure(
+async function clearLocalTicketFailure(
   directory: string,
   ticketId: string,
   status: string,

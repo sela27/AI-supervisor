@@ -1,3 +1,4 @@
+import { CHECKBOX_LINE, readAcceptanceCriteria } from "./criteria.js";
 import type { AcceptanceCriterion } from "./ticket.js";
 
 /** One ticket file, read but not yet related to the others in its directory. */
@@ -20,7 +21,6 @@ export type ParsedTicketFile =
 
 const TITLE_LINE = /^#\s+(.+)$/;
 const NUMBER_PREFIX = /^\d+\s*[—–-]\s*/;
-const CHECKBOX_LINE = /^-\s+\[([ xX])\]\s*(.*)$/;
 const STATUS_LINE = /^\*\*Status:\*\*/i;
 const FAILURE_HEADING = "## Supervisor failure";
 
@@ -197,17 +197,6 @@ function splitReferences(value: string): string[] {
     .split(",")
     .map((reference) => reference.trim().replace(/^#/, "").trim())
     .filter((reference) => reference !== "");
-}
-
-function readAcceptanceCriteria(lines: string[], start: number): AcceptanceCriterion[] {
-  const criteria: AcceptanceCriterion[] = [];
-  for (const line of lines.slice(start)) {
-    const match = CHECKBOX_LINE.exec(line.trim());
-    if (match) {
-      criteria.push({ text: (match[2] ?? "").trim(), done: match[1]?.toLowerCase() === "x" });
-    }
-  }
-  return criteria;
 }
 
 function stripExtension(fileName: string): string {

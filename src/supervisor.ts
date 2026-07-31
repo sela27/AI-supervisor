@@ -11,6 +11,7 @@ import { createQueueEngine } from "./queue/engine.js";
 import type { Runner } from "./runner/runner.js";
 import { unavailableRunner } from "./runner/unavailable.js";
 import { openStorage } from "./storage.js";
+import { ghCli, type GhCommand } from "./tickets/gh.js";
 
 export interface SupervisorOptions {
   /** Everything the instance was configured with, file and environment together. */
@@ -29,6 +30,11 @@ export interface SupervisorOptions {
    * notifications are their own ticket, and this is what they will be built on.
    */
   onEvent?: EventSink;
+  /**
+   * How the Supervisor talks to GitHub. The real `gh` CLI unless a test hands
+   * over one of its own, so a suite never reaches a live repository.
+   */
+  gh?: GhCommand;
 }
 
 export interface RunningSupervisor {
@@ -56,6 +62,7 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
     storage,
     engine,
     defaults: config.defaults,
+    gh: options.gh ?? ghCli(),
     logger: options.logger,
   });
 

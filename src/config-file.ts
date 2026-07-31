@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { messageOf } from "./errors.js";
 import { asRecord } from "./json.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
+import { isRepositoryName, type SourceSelection } from "./tickets/source.js";
 import { isVerification } from "./verification/verifier.js";
 
 /** What an instance's config file is called, unless it is pointed at another one. */
@@ -15,7 +16,8 @@ export const CONFIG_FILENAME = "supervisor.config.json";
  * in the request is a perfectly good way to run.
  */
 export interface QueueRunDefaults {
-  sourceDirectory?: string;
+  /** The Ticket Source this instance minds, when the file settles which it is. */
+  source?: SourceSelection;
   projectDirectory?: string;
   verify?: string[];
   pushCheckpoints?: boolean;
@@ -44,7 +46,7 @@ const FILE_SETTINGS = [
   "project",
 ];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
-const SOURCE_SETTINGS = ["type", "directory"];
+const SOURCE_SETTINGS = ["type", "directory", "repository"];
 const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
 
 export const HIGHEST_PORT = 65_535;
@@ -88,7 +90,6 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const runner = section(path, settings.runner, RUNNER_SETTINGS, "runner");
   const source = section(path, settings.source, SOURCE_SETTINGS, "source");
   const project = section(path, settings.project, PROJECT_SETTINGS, "project");
-  sourceType(path, source.type);
 
   const dataDir = directory(path, settings.dataDir, "dataDir");
   const port = wholePort(path, settings.port);
@@ -97,7 +98,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const attemptBudget = budget(path, settings.attemptBudget);
   const model = text(path, runner.model, "runner.model");
   const permissionMode = mode(path, runner.permissionMode);
-  const sourceDirectory = directory(path, source.directory, "source.directory");
+  const ticketSource = sourceSelection(path, source);
   const projectDirectory = directory(path, project.directory, "project.directory");
   const verify = commands(path, project.verify);
   const pushCheckpoints = flag(path, project.pushCheckpoints, "project.pushCheckpoints");
@@ -111,7 +112,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(attemptBudget === undefined ? {} : { attemptBudget }),
     defaults: {
-      ...(sourceDirectory === undefined ? {} : { sourceDirectory }),
+      ...(ticketSource === undefined ? {} : { source: ticketSource }),
       ...(projectDirectory === undefined ? {} : { projectDirectory }),
       ...(verify === undefined ? {} : { verify }),
       ...(pushCheckpoints === undefined ? {} : { pushCheckpoints }),
@@ -214,14 +215,62 @@ function commands(path: string, value: unknown): string[] | undefined {
   return value;
 }
 
-/** One Ticket Source per queue, and only one kind of source exists so far. */
-function sourceType(path: string, value: unknown): void {
-  if (value !== undefined && value !== "local") {
-    throw new Error(
-      `${setting(path, "source.type")} must be "local" — no other ticket source exists yet, ` +
-        `got ${quote(value)}`,
-    );
+/**
+ * Which Ticket Source this instance minds. The type decides what else the section
+ * has to say — a local source is a directory, a GitHub one an `owner/name` — so a
+ * setting belonging to the other kind is a source that was never going to work.
+ * A source that names its kind and nothing else settles nothing, and the start
+ * request has to say where its tickets are.
+ */
+function sourceSelection(
+  path: string,
+  source: Record<string, unknown>,
+): SourceSelection | undefined {
+  if (sourceType(path, source.type) === "github") {
+    refuseMisplaced(path, source, "directory", "github", "repository");
+
+    const repository = text(path, source.repository, "source.repository");
+    if (repository !== undefined && !isRepositoryName(repository)) {
+      throw new Error(
+        `${setting(path, "source.repository")} must be the "owner/name" of a repository, ` +
+          `got ${quote(repository)}`,
+      );
+    }
+    return repository === undefined ? undefined : { type: "github", repository };
   }
+
+  refuseMisplaced(path, source, "repository", "local", "directory");
+  const where = directory(path, source.directory, "source.directory");
+  return where === undefined ? undefined : { type: "local", directory: where };
+}
+
+/**
+ * A source pointed the way the other kind of source is pointed was never going to
+ * read anything, and saying so beats the setting simply not applying.
+ */
+function refuseMisplaced(
+  path: string,
+  source: Record<string, unknown>,
+  strange: string,
+  type: string,
+  instead: string,
+): void {
+  if (source[strange] === undefined) return;
+
+  throw new Error(
+    `${setting(path, `source.${strange}`)} belongs to the other kind of ticket source — ` +
+      `a ${type} source is pointed at a "${instead}"`,
+  );
+}
+
+/** One Ticket Source per queue, and there are two kinds of them. */
+function sourceType(path: string, value: unknown): SourceSelection["type"] {
+  if (value === undefined || value === "local") return "local";
+  if (value === "github") return "github";
+
+  throw new Error(
+    `${setting(path, "source.type")} must be "local" or "github", got ${quote(value)}`,
+  );
 }
 
 function wholePort(path: string, value: unknown): number | undefined {

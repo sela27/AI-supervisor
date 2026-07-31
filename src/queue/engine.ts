@@ -4,12 +4,7 @@ import type { EventSink } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
-import {
-  clearLocalTicketFailure,
-  discoverLocalTickets,
-  markLocalTicketDone,
-  markLocalTicketFailed,
-} from "../tickets/local-source.js";
+import type { TicketSource } from "../tickets/source.js";
 import type { Ticket } from "../tickets/ticket.js";
 import { verify } from "../verification/verifier.js";
 import { downstreamOf } from "./dependents.js";
@@ -102,8 +97,8 @@ export interface Project {
 }
 
 export interface QueueRunRequest {
-  /** Directory of local ticket files the Queue is discovered from. */
-  sourceDirectory: string;
+  /** The one Ticket Source this queue is discovered from and written back to. */
+  source: TicketSource;
   project: Project;
   /** What the user left out of the Queue, and the order they want it run in. */
   edit: QueueEdit;
@@ -152,6 +147,12 @@ interface Queued {
    * whatever happened to the queue after it.
    */
   takenOut: boolean;
+  /**
+   * Whether the Ticket Source is currently carrying this ticket's failure. Only a
+   * ticket that has one has anything to take back off it, and a source is written
+   * to over the network as readily as into a file beside the code.
+   */
+  failureRecorded: boolean;
 }
 
 /** Why a ticket the user took out of a run in progress is not going to run. */
@@ -243,10 +244,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
   async function begin(request: QueueRunRequest): Promise<QueueRun> {
     // The user's edit is carried out before anything is created, so an impossible
     // queue is refused rather than started and then found to be stuck.
-    const preview = previewQueue(
-      await discoverLocalTickets(request.sourceDirectory),
-      request.edit,
-    );
+    const preview = previewQueue(await request.source.discover(), request.edit);
     const repository = await openRepository(request.project.directory);
 
     // A run commits everything it finds, so anything already uncommitted would be
@@ -263,6 +261,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
     const queued: Queued[] = preview.tickets.map((ticket) => ({
       ticket,
       takenOut: false,
+      failureRecorded: false,
       entry: {
         id: ticket.id,
         title: ticket.title,
@@ -300,6 +299,9 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       attemptBudget: dependencies.attemptBudget,
       restorePoint: await repository.headCommit(),
     };
+    // Said before a single ticket is attempted: a queue holding work nothing in it
+    // could ever release should say so while the user is still looking at it.
+    skipDependents(context);
     void execute(context);
 
     return snapshot(started);
@@ -681,14 +683,17 @@ async function attemptTicket(queued: Queued, context: RunContext): Promise<void>
  * ticket that goes on to succeed carrying the reason it did not would be a lie the
  * morning's triage reads, and the Checkpoint would commit it.
  *
- * Only a ticket that has been attempted before has anything to undo, and this is
- * the one moment it can be undone safely: the working tree is back at the restore
- * point, so the commit that records it can pick up nothing else.
+ * Only a ticket the source is actually carrying a failure for has anything to
+ * undo — a ticket a usage limit interrupted was never blamed for anything, and a
+ * week of half-hourly probes must not each write to the source to say so. This is
+ * also the one moment it can be undone safely: the working tree is back at the
+ * restore point, so the commit that records it can pick up nothing else.
  */
 async function clearEarlierFailure(queued: Queued, context: RunContext): Promise<void> {
-  if (queued.entry.attempts === 0) return;
+  if (!queued.failureRecorded) return;
+  queued.failureRecorded = false;
 
-  await clearLocalTicketFailure(context.sourceDirectory, queued.ticket.id, queued.ticket.status);
+  await context.source.clearFailure(queued.ticket);
   // Ticket files kept outside the repository leave nothing to commit, and the
   // restore point simply stands.
   const recorded = await context.repository.commitEverything(`Retrying: ${queued.ticket.title}`);
@@ -761,10 +766,10 @@ async function attempt(
 async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
   const { entry, ticket } = queued;
 
-  await markLocalTicketDone(context.sourceDirectory, ticket.id);
+  await context.source.markDone(ticket);
   // The write-back, and anything the Run left uncommitted, ride along in the
-  // Checkpoint. Ticket files kept outside the repository cannot; there the Run's
-  // own last commit is what ends the ticket.
+  // Checkpoint. A source that keeps its tickets elsewhere leaves nothing to
+  // commit; there the Run's own last commit is what ends the ticket.
   const swept = await context.repository.commitEverything(`Checkpoint: ${ticket.title}`);
   entry.checkpoint = swept ?? (await context.repository.headCommit());
   context.restorePoint = entry.checkpoint;
@@ -774,6 +779,11 @@ async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
   // before the next ticket is attempted, so the remote is never more than one
   // ticket behind the work.
   await pushCheckpoint(context);
+  // And then the source is told where the work went. Unlike the push, a source
+  // that will not take this ends the run: done-ness lives in the source, so a
+  // Supervisor that cannot record it there would go on to spend the night on
+  // tickets the next run would have every reason to do all over again.
+  await context.source.recordCheckpoint(ticket, entry.checkpoint);
 }
 
 /**
@@ -885,11 +895,12 @@ async function failTicket(queued: Queued, reason: string, context: RunContext): 
   queued.entry.state = "failed";
   queued.entry.failure = reason;
 
-  await markLocalTicketFailed(context.sourceDirectory, queued.ticket.id, reason);
+  await context.source.markFailed(queued.ticket, reason);
+  queued.failureRecorded = true;
   // Committing the write-back is what ends the ticket cleanly: the branch is left
   // with nothing uncommitted, so the next ticket's Checkpoint stays its own work
-  // and the next reset cannot rewind this record away. Ticket files kept outside
-  // the repository leave nothing to commit, and the restore point simply stands.
+  // and the next reset cannot rewind this record away. A source that keeps its
+  // tickets elsewhere leaves nothing to commit, and the restore point stands.
   const recorded = await context.repository.commitEverything(`Failed: ${queued.ticket.title}`);
   context.restorePoint = recorded ?? context.restorePoint;
 
@@ -902,10 +913,12 @@ function joined(...parts: (string | undefined)[]): string {
 }
 
 /**
- * Marks everything a failure has doomed. One pass suffices: the queue is in
+ * Marks everything the queue can no longer reach — what a failure has doomed, and
+ * what was never reachable to begin with. One pass suffices: the queue is in
  * dependency order, so a ticket is only reached after every blocker it names.
  */
 function skipDependents(context: RunContext): void {
+  const inQueue = new Set(context.queued.map(({ entry }) => entry.id));
   const stopped = new Set(
     context.queued
       .filter(({ entry }) => entry.state === "failed" || entry.state === "skipped")
@@ -915,11 +928,17 @@ function skipDependents(context: RunContext): void {
   for (const { entry, ticket } of context.queued) {
     if (entry.state !== "pending") continue;
 
-    const blocker = ticket.blockedBy.find((id) => stopped.has(id));
+    // A blocker the Queue does not hold — on GitHub, an open issue that is not
+    // the Supervisor's to run — is one nothing here will ever finish, so the
+    // ticket is out of this run for the same reason a doomed one is. Leaving it
+    // `pending` in a completed run would be the queue quietly not saying so.
+    const blocker = ticket.blockedBy.find((id) => stopped.has(id) || !inQueue.has(id));
     if (blocker === undefined) continue;
 
     entry.state = "skipped";
-    entry.failure = `${blocker} did not succeed, so this ticket was never attempted`;
+    entry.failure = inQueue.has(blocker)
+      ? `${blocker} did not succeed, so this ticket was never attempted`
+      : `${blocker} is not in this queue, so nothing here would have unblocked it`;
     stopped.add(entry.id);
   }
 }

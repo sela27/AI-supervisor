@@ -56,14 +56,22 @@ function blockersAllIn(ticket: Ticket, ids: ReadonlySet<string>): boolean {
  * Takes the earliest ticket whose blockers are already placed, over and over.
  * Where the blocking edges leave a choice the Ticket Source's own order decides,
  * so a queue runs in the order the tickets were written.
+ *
+ * An edge may name a ticket this Queue does not hold — on GitHub, an open issue
+ * that is not the Supervisor's to run. There is no place to put what is not here,
+ * so such an edge orders nothing; it still gates, because nothing in the Queue
+ * will ever finish it, and what it blocks is reported blocked and never run.
  */
 function orderByBlockingEdges(tickets: Ticket[]): Ticket[] {
   const remaining = [...tickets];
   const ordered: Ticket[] = [];
+  const inQueue = new Set(tickets.map((ticket) => ticket.id));
   const placed = new Set<string>();
 
   while (remaining.length > 0) {
-    const ticket = remaining.find((candidate) => blockersAllIn(candidate, placed));
+    const ticket = remaining.find((candidate) =>
+      candidate.blockedBy.every((id) => placed.has(id) || !inQueue.has(id)),
+    );
     // Nothing is placeable while tickets remain: what is left is a cycle.
     if (!ticket) {
       const ids = remaining.map((blocked) => blocked.id).join(", ");

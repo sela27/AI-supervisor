@@ -13,13 +13,13 @@ A tracer-bullet vertical slice of work with acceptance criteria and blocking edg
 _Avoid_: task, issue (reserve "issue" for the GitHub representation)
 
 **Ticket Source**:
-Where the tickets of a given queue live — either GitHub Issues or local ticket files. A queue reads from exactly one source, never both.
+Where the tickets of a given queue live, and where their outcomes are written back — either GitHub Issues or local ticket files. A queue reads from exactly one source, never both: a run reading from two would have no single place its outcomes belong, and no single answer to what is done.
 
 **Queue**:
 The ordered list of tickets the Supervisor will execute, discovered automatically from the Ticket Source by dependency order, and editable by the user before the run starts.
 
 **Frontier**:
-The set of tickets whose blockers are all done — the only tickets eligible to run next. A ticket with an open blocker is never run.
+The set of tickets whose blockers are all done — the only tickets eligible to run next. A ticket with an open blocker is never run, and a ticket blocked by something outside the Queue altogether is never run either: nothing in the Queue is going to finish it.
 
 **Queue edit**:
 What the user did to the Queue before running it: which tickets to leave out, and the order to run the rest in. An edit is answered against the blocking edges, so one that could never be run is refused rather than started.

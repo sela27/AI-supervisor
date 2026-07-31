@@ -60,7 +60,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
     attemptBudget: 3,
     runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
     defaults: {
-      sourceDirectory: join(cwd, "tickets"),
+      source: { type: "local", directory: join(cwd, "tickets") },
       projectDirectory: join(cwd, "app"),
       verify: ["npm run typecheck", "npm test"],
       pushCheckpoints: false,
@@ -77,7 +77,10 @@ test("a directory is read against the file, not against wherever the service sta
   });
 
   // The settings travel with the deployment, so what they point at travels too.
-  expect(config.defaults.sourceDirectory).toBe(join(elsewhere, "tickets"));
+  expect(config.defaults.source).toEqual({
+    type: "local",
+    directory: join(elsewhere, "tickets"),
+  });
 });
 
 test("the environment overrides the file, so one container can differ from its image", async () => {
@@ -156,10 +159,28 @@ test("an unknown permission mode says which ones there are", async () => {
   expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/bypassPermissions/);
 });
 
-test("a ticket source of a type that does not exist yet is refused", async () => {
-  const cwd = await instanceWith({ source: { type: "github", directory: "./tickets" } });
+test("a ticket source of a type that does not exist is refused", async () => {
+  const cwd = await instanceWith({ source: { type: "jira", directory: "./tickets" } });
 
-  expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/github/);
+  expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/jira/);
+});
+
+test("a source settled by a setting the other kind of source uses is refused", async () => {
+  // Each kind is pointed somewhere its own way, so a setting from the other kind
+  // is a source that was never going to read anything.
+  const misplaced = await instanceWith({ source: { type: "github", directory: "./tickets" } });
+  expect(() => loadSupervisorConfig({ cwd: misplaced, env: {} })).toThrow(/directory/);
+
+  // A bare repository name only means anything from inside a clone of it, and the
+  // Supervisor is standing in the project rather than in the tracker.
+  const bare = await instanceWith({ source: { type: "github", repository: "AI-supervisor" } });
+  expect(() => loadSupervisorConfig({ cwd: bare, env: {} })).toThrow(/owner\/name/);
+
+  const github = await instanceWith({ source: { type: "github", repository: "sela27/AI-supervisor" } });
+  expect(loadSupervisorConfig({ cwd: github, env: {} }).defaults.source).toEqual({
+    type: "github",
+    repository: "sela27/AI-supervisor",
+  });
 });
 
 test("verification that could never refuse an Attempt is refused itself", async () => {

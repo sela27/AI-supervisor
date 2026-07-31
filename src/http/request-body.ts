@@ -1,9 +1,11 @@
 import { CONFIG_FILENAME } from "../config-file.js";
 import { asRecord } from "../json.js";
 import { unedited, type QueueEdit } from "../queue/edit.js";
+import { isRepositoryName, type SourceSelection } from "../tickets/source.js";
 
 const SOURCE_SHAPE =
-  'A ticket source looks like { "source": { "type": "local", "directory": "/path/to/tickets" } }';
+  'A ticket source looks like { "source": { "type": "local", "directory": "/path/to/tickets" } } ' +
+  'or { "source": { "type": "github", "repository": "owner/name" } }';
 
 const QUEUE_SHAPE =
   'An edited queue looks like { "queue": { "exclude": ["03-search-ui"], "order": ["02-add-search"] } }';
@@ -21,7 +23,10 @@ export function notSupplied(what: string, shape: string): string {
  * with; a request that names one at all has to name it properly, since a
  * half-written source is a mistake, not a request to use the configured one.
  */
-export function readSourceSelection(body: unknown, configured?: string): Read<string> {
+export function readSourceSelection(
+  body: unknown,
+  configured?: SourceSelection,
+): Read<SourceSelection> {
   const named = asRecord(body)?.source;
   if (named === undefined) {
     return configured === undefined
@@ -32,19 +37,32 @@ export function readSourceSelection(body: unknown, configured?: string): Read<st
   const source = asRecord(named);
   if (!source) return { ok: false, message: SOURCE_SHAPE };
 
-  if (source.type !== "local") {
-    return {
-      ok: false,
-      message: `Unknown ticket source type ${JSON.stringify(source.type)} — only "local" is supported`,
-    };
+  if (source.type === "local") {
+    const directory = pointedAt(source.directory);
+    return directory === undefined
+      ? { ok: false, message: `A local ticket source needs a directory. ${SOURCE_SHAPE}` }
+      : { ok: true, value: { type: "local", directory } };
   }
 
-  const directory = source.directory;
-  if (typeof directory !== "string" || directory.trim() === "") {
-    return { ok: false, message: `A local ticket source needs a directory. ${SOURCE_SHAPE}` };
+  if (source.type === "github") {
+    const repository = pointedAt(source.repository);
+    return repository === undefined || !isRepositoryName(repository)
+      ? {
+          ok: false,
+          message: `A GitHub ticket source needs the "owner/name" of a repository. ${SOURCE_SHAPE}`,
+        }
+      : { ok: true, value: { type: "github", repository: repository.trim() } };
   }
 
-  return { ok: true, value: directory };
+  return {
+    ok: false,
+    message: `Unknown ticket source type ${JSON.stringify(source.type)} — it is "local" or "github"`,
+  };
+}
+
+/** What a source was pointed at, or nothing when it was not pointed anywhere. */
+function pointedAt(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 /**

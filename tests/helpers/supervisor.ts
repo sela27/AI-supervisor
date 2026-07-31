@@ -3,6 +3,7 @@ import { loadSupervisorConfig } from "../../src/config.js";
 import type { EventSink } from "../../src/events.js";
 import type { Runner } from "../../src/runner/runner.js";
 import { startSupervisor } from "../../src/supervisor.js";
+import type { GhCommand } from "../../src/tickets/gh.js";
 import { createTempDirectory } from "./temp-dir.js";
 
 /**
@@ -35,6 +36,11 @@ export interface TestSupervisorOptions {
   clock?: Clock;
   /** Where the Supervisor's own events go — the Notifier's seam, stood in for. */
   onEvent?: EventSink;
+  /**
+   * A `gh` of the test's own, standing in for the CLI so a queue of GitHub issues
+   * is run without a live repository anywhere near it.
+   */
+  gh?: GhCommand;
 }
 
 export async function startTestSupervisor(
@@ -52,6 +58,7 @@ export async function startTestSupervisor(
     runner: options.runner,
     clock: options.clock,
     onEvent: options.onEvent,
+    gh: options.gh,
   });
 
   return {

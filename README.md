@@ -9,6 +9,10 @@ vocabulary and the spec issue for the full design.
 Node.js 22.13+ (SQLite is used through Node's built-in `node:sqlite`, so there is no native
 build step).
 
+A queue whose tickets are GitHub issues also needs the [`gh`](https://cli.github.com) CLI on
+the path, authenticated for the repository — `gh auth status` says whether it is, and
+`GH_TOKEN` is what a container is given. A queue of ticket files needs neither.
+
 ## Running it
 
 ```bash
@@ -56,6 +60,21 @@ below.
 in the file, starting a run needs nothing but the instruction to start. A start request that
 names one of them anyway wins, for that run only.
 
+`source.type` is `local` or `github`, and it decides what else the section says: a local
+source is pointed at a `directory`, a GitHub one at the `repository` its issues live in.
+
+```json
+{
+  "source": {
+    "type": "github",
+    "repository": "owner/name"
+  }
+}
+```
+
+A queue reads from exactly one source. Naming the other kind's setting — a `directory` under
+a GitHub source — stops the service from starting rather than reading nothing at 3am.
+
 Every directory in the file — `dataDir`, `source.directory`, `project.directory` — is read
 against the file's own directory rather than against wherever the service happened to be
 started from: the settings travel with the deployment, so what they point at travels with
@@ -85,8 +104,8 @@ are what an instance _is_, and the file is where they belong.
 
 ## Previewing a queue
 
-Point the Supervisor at a directory of local ticket files to see the Queue it would build —
-every ticket in dependency order, plus the Frontier (the tickets that could run right now):
+Point the Supervisor at a Ticket Source to see the Queue it would build — every ticket in
+dependency order, plus the Frontier (the tickets that could run right now):
 
 ```bash
 curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json' -d '{"source":{"type":"local","directory":"./.scratch/my-feature/issues"}}'
@@ -135,6 +154,51 @@ ticket, and several may be listed comma-separated or as bullets under the field.
 `**Status:** done` marks a ticket finished — it is never runnable, and it no longer blocks
 its dependents.
 
+## Tickets on GitHub
+
+The other kind of Ticket Source is a repository's own issues, which is where a tracked
+project's tickets already live and where the morning's triage already starts:
+
+```bash
+curl -X POST localhost:4317/api/queue/preview -H 'content-type: application/json' -d '{"source":{"type":"github","repository":"owner/name"}}'
+```
+
+The Queue is the **open issues labelled `ready-for-agent`**, lowest number first — an issue
+without that label is not the Supervisor's to pick up, whoever else it is for. The
+acceptance criteria are the checkboxes under the issue's `## Acceptance criteria` heading, or
+every checkbox it has when it is not written in that shape.
+
+The blocking edges are the repository's **own issue dependencies** — what GitHub shows a
+reader, and what `/to-tickets` records. A `Blocked by:` line in an issue body is prose to a
+GitHub queue; the edge has to be the real one:
+
+```bash
+gh api --method POST repos/owner/name/issues/12/dependencies/blocked_by -F issue_id=$(gh api repos/owner/name/issues/11 --jq .id)
+```
+
+A **closed** issue is a finished ticket, so it gates nothing: closing a blocker on GitHub is
+all it takes to release everything waiting on it into the next discovery's Frontier. An issue
+blocked by one that is open and _not_ labelled `ready-for-agent` — a ticket a human still
+owes an answer on — is in the Queue, reported `blocked` by the preview, and `skipped` the
+moment a run starts, with the blocker named in its `failure` field. Nothing in the Queue was
+ever going to finish it, and quota spent on it would be quota wasted.
+
+Discovery reads at most 200 open `ready-for-agent` issues and refuses a repository with more:
+that is not a queue anyone means to run in a night, and quietly taking the first 200 would be
+a Queue missing its tail without saying so.
+
+Outcomes go back to the issue. A succeeded ticket is **closed with a comment naming the
+Checkpoint** it ended in, so the morning can go and look at the commit from the issue itself.
+A ticket the Supervisor could not get past is **left open, commented with what refused it,
+and relabelled `ready-for-human`** — it still has to happen, and it is no longer the
+Supervisor's. Giving that ticket another go hands it back: `ready-for-agent` returns before
+the Attempt does, so an issue that goes on to succeed is never left flagged for a human who
+no longer has anything to do.
+
+Nothing else is written. A skipped ticket was never tried, so nothing is said about it, and
+an Attempt a usage limit interrupted says nothing either — however many times the run has to
+ask whether the quota is back.
+
 ## Running a queue
 
 Starting a run executes the whole Queue unattended — one ticket at a time, in dependency
@@ -168,9 +232,14 @@ up, and starting over them would strand a night's work on a branch nobody was to
 An Attempt only counts as succeeded when **every** `verify` command exits 0 **and** the
 Attempt left at least one new commit — what Claude says about itself is never enough, which
 is why at least one command is required. A verified ticket then ends in a Checkpoint commit,
-and `done` is written back to its ticket file. Ticket files kept inside the project are
-committed along with the Checkpoint; kept outside it, the Run's own last commit ends the
-ticket.
+and the outcome is written back to the Ticket Source. Ticket files kept inside the project
+are rewritten before the Checkpoint and committed along with it; kept outside it, the Run's
+own last commit ends the ticket. A GitHub issue is closed after the Checkpoint has been made —
+and pushed, where the project pushes — because the comment that closes it names that commit.
+
+A Ticket Source that will not take the write-back ends the run, unlike a remote that will not
+take a push: done-ness lives in the source, so a Supervisor that cannot record it there would
+spend the rest of the night on tickets the next run would have every reason to do again.
 
 The `verify` commands run in the project directory through a shell, so `npm test` and
 `bash -c '...'` both work.
@@ -357,10 +426,12 @@ Attempt — nothing was learned about the ticket, so nothing is spent.
 A ticket whose every Attempt was refused has failed, and the last one's work is already
 gone with the rest.
 
-The ticket's own file is then rewritten to `**Status:** failed` with a `## Supervisor
-failure` section quoting the summary, so morning triage starts from the ticket itself. That
-write-back is committed as `Failed: <title>` — the only thing a failed ticket ever adds to
-the branch, and the reason the branch is left clean enough for the next run to start.
+The failure is then written back to the Ticket Source, so morning triage starts from the
+ticket itself: a ticket file is rewritten to `**Status:** failed` with a `## Supervisor
+failure` section quoting the summary, and a GitHub issue is commented and relabelled
+`ready-for-human`. A file write-back is committed as `Failed: <title>` — the only thing a
+failed ticket ever adds to the branch, and the reason the branch is left clean enough for the
+next run to start.
 
 Every ticket that was waiting on the failure — directly or through another ticket — is
 marked `skipped` and never attempted, with the blocker named in its `failure` field. Nothing
@@ -391,7 +462,10 @@ npm test
 ```
 
 Tests boot the real service against a temporary data directory and drive it through the HTTP
-API — that is the seam every feature is tested at.
+API — that is the seam every feature is tested at. Three things are substituted there: the
+Runner, so no Claude Code is launched; the clock, so a limit wait of days is proved in
+milliseconds; and `gh`, so a queue of GitHub issues is run without a live repository. Git,
+the filesystem, SQLite and the verification commands are all real.
 
 ## Building
 
