@@ -1,0 +1,29 @@
+# The build context is the source and the lockfile; everything below is either
+# rebuilt in the image, belongs to a machine rather than to the image, or is a
+# secret that has no business in one.
+node_modules
+dist
+data
+*.tsbuildinfo
+
+.git
+.gitignore
+.claude
+.agents
+docs
+tests
+vitest.config.ts
+
+.env
+.env.*
+claude
+supervisor.config.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+
+Dockerfile
+docker-compose.yml
+.dockerignore

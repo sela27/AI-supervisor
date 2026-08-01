@@ -1,0 +1,6 @@
+# The container's own files are read by Linux, whatever checked them out. A
+# Windows clone that gave the entrypoint CRLF line endings would build an image
+# whose shebang names `/bin/sh\r`, and nothing in it would ever start.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf

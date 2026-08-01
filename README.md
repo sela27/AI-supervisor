@@ -13,6 +13,9 @@ A queue whose tickets are GitHub issues also needs the [`gh`](https://cli.github
 the path, authenticated for the repository — `gh auth status` says whether it is, and
 `GH_TOKEN` is what a container is given. A queue of ticket files needs neither.
 
+None of it has to be on this machine: the image carries all of it, and a deployment needs
+nothing but Docker — see [In a container](#in-a-container).
+
 ## Running it
 
 ```bash
@@ -112,6 +115,96 @@ image it was built from:
 The ticket source, the project, the attempt budget, the notification settings and the safety
 stops have no environment variables: they are what an instance _is_, and the file is where
 they belong.
+
+## In a container
+
+One image holds everything a night needs: the service and its dashboard, the Claude Code
+executable it launches Runs with, and the git, ssh and `gh` those Runs and their Checkpoints
+need. The Claude Code executable is the one the Agent SDK ships, put on the path under its
+own name — there is no second copy to drift out of step with what the Runs actually use.
+
+One container minds one project. Everything that differs between projects is mounted or
+given as environment, so the same image minds any of them.
+
+### First run
+
+```bash
+cp .env.example .env && cp supervisor.config.example.json supervisor.config.json && mkdir -p claude
+```
+
+Make the credentials directory yourself rather than leaving it to Docker: a bind mount whose
+source does not exist is created by Docker as root, and the container is not root.
+
+Fill in `.env` — at minimum `SUPERVISOR_PROJECT_DIR`, the absolute path to the clone the
+Supervisor works on — and edit `supervisor.config.json` to say what this instance is: where
+its tickets live, and what verifies an Attempt. Paths in that file are container paths, so
+the project is `/project` and its ticket files are somewhere under it.
+
+Then log Claude in, once, into the credentials directory the nights will run on:
+
+```bash
+docker compose run --rm supervisor claude
+```
+
+That opens Claude Code inside the container against the mounted `/claude`; `/login` there,
+and the subscription it authorises is what every Run of that instance is made on. It is a
+directory of its own on purpose — the Supervisor never touches the one you log in with
+yourself, so revoking one leaves the other alone.
+
+```bash
+docker compose up -d
+```
+
+The dashboard is on `http://localhost:4317`, or whatever `SUPERVISOR_HOST_PORT` says.
+
+### What is mounted, and what is given
+
+| Mount                      | Container path                | What it is                                                    |
+| -------------------------- | ----------------------------- | ------------------------------------------------------------- |
+| `SUPERVISOR_PROJECT_DIR`   | `/project`                    | The clone it works on — the only part of the machine it sees   |
+| `SUPERVISOR_CLAUDE_DIR`    | `/claude`                     | The Claude credentials the nights run on                       |
+| `./supervisor.config.json` | `/app/supervisor.config.json` | What this instance is, read once at start                      |
+| `supervisor-data` volume   | `/data`                       | The runs, their Attempts, and everything those printed         |
+
+The data directory is a named volume rather than a bind mount, so rebuilding the image
+leaves the night's own record where it was.
+
+| Variable                            | Read by        | Meaning                                                     |
+| ----------------------------------- | -------------- | ----------------------------------------------------------- |
+| `SUPERVISOR_PROJECT_DIR`            | compose        | The project this instance minds. No default — it must be said |
+| `SUPERVISOR_CLAUDE_DIR`             | compose        | Where the nights' Claude credentials are kept                |
+| `SUPERVISOR_HOST_PORT`              | compose        | Which port on this machine the dashboard answers on          |
+| `SUPERVISOR_UID` / `SUPERVISOR_GID` | compose        | Who the container runs as                                    |
+| `SUPERVISOR_GIT_NAME`               | the entrypoint | Who Checkpoints are committed under, if the clone has not said |
+| `SUPERVISOR_GIT_EMAIL`              | the entrypoint | The address those commits carry                              |
+| `GH_TOKEN` or `GITHUB_TOKEN`        | `gh` and git   | The repository token: reading issues, writing them back, pushing |
+
+The two `SUPERVISOR_GIT_*` variables are the container's rather than the service's: `npm run
+dev` does not read them, and a clone that already has an identity of its own keeps it — the
+container only settles the fallback, so that a night never dies at its first Checkpoint for
+want of a name to commit under.
+
+The token needs permission to read and write the repository's issues and to push to it. It
+is what `gh` authenticates with, and the container arranges git to push over https with the
+same one — `gh` answers to either name, so the container does too. A queue of ticket files
+pushing to no remote needs none of it.
+
+### Two things about the host
+
+**The container is not root.** Claude Code refuses to skip permissions for root, and a Run
+that stops to ask is a Run that never finishes — so the container runs as uid 1000. On a
+Linux host that has to be whoever owns the mounted project and credentials directory: set
+`SUPERVISOR_UID` and `SUPERVISOR_GID` to your own `id -u` and `id -g`. On macOS and Windows
+the defaults are right, because those mounts are not owned by anybody in particular.
+
+**On a Windows host, clone the project with `core.autocrlf=false`.** Windows git checks
+files out with CRLF line endings by default, and the container's git — which is Linux git —
+reads every one of them as an uncommitted change. A run refuses to start on a project with
+uncommitted changes, which is how that shows up.
+
+The service is `restart: unless-stopped`, so a container that goes down comes back and
+picks the night up where the last one left it — see
+[When the Supervisor restarts](#when-the-supervisor-restarts).
 
 ## Previewing a queue
 
@@ -643,10 +736,14 @@ milliseconds; `gh`, so a queue of GitHub issues is run without a live repository
 Notifier, so what would have reached a phone is read without a byte of it leaving the
 machine. Git, the filesystem, SQLite and the verification commands are all real.
 
-Three things cannot be reached through that seam and are covered directly instead: reading an
+Four things cannot be reached through that seam and are covered directly instead: reading an
 instance's settings, which happens before there is a service to ask; the production Runner,
-against recorded Runs; and the production Notifier, which is what every other test stands in
-for — that one posts to a real HTTP server on a port of its own.
+against recorded Runs; the production Notifier, which is what every other test stands in
+for — that one posts to a real HTTP server on a port of its own; and the container's
+entrypoint, which is not the service at all. That one is run over a global git config of its
+own and read back out of it, which is the whole of what it does. The image itself and the
+compose file are not covered: proving those would mean building and running the container,
+which needs Docker, a network, and a Claude subscription to log in with.
 
 The restart tests boot two Supervisors in turn onto one data directory, which is what a
 restart is. The kill is modelled rather than performed: the Supervisor is shut down while the

@@ -1,0 +1,50 @@
+# One Supervisor, one project. Copy .env.example to .env, fill it in, and
+# `docker compose up -d`. Everything the instance is — its Ticket Source, its
+# verification commands, how far a night may go — lives in supervisor.config.json
+# beside this file; everything one deployment differs by lives in .env.
+services:
+  supervisor:
+    build: .
+    image: ai-supervisor
+    # A container that goes down comes back and picks the night up where it left
+    # it, which is what a Supervisor restarting is for.
+    restart: unless-stopped
+    # Who the container is, which on a Linux host has to be whoever owns the
+    # mounted project — `id -u` and `id -g` say. Never root: Claude Code refuses
+    # to skip permissions for root, and a Run that stops to ask never finishes.
+    user: "${SUPERVISOR_UID:-1000}:${SUPERVISOR_GID:-1000}"
+    ports:
+      - "${SUPERVISOR_HOST_PORT:-4317}:4317"
+    environment:
+      # Who the Checkpoints are committed under. A project whose own clone
+      # already has an identity keeps it — this is only the fallback.
+      SUPERVISOR_GIT_NAME: ${SUPERVISOR_GIT_NAME:-AI Supervisor}
+      SUPERVISOR_GIT_EMAIL: ${SUPERVISOR_GIT_EMAIL:-ai-supervisor@localhost}
+      # What gh reads, and what a Checkpoint is pushed to GitHub with. Both
+      # names, because gh answers to both and the container must not be narrower
+      # about pushing than gh is about reading.
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SUPERVISOR_MODEL: ${SUPERVISOR_MODEL:-}
+      SUPERVISOR_LOG_LEVEL: ${SUPERVISOR_LOG_LEVEL:-info}
+    volumes:
+      # The project the Supervisor works on. Its own clone, with a remote it can
+      # push to — this is the only part of the machine the container can see.
+      - ${SUPERVISOR_PROJECT_DIR:?the project the Supervisor minds is unset}:/project
+      # The Claude credentials the nights run on. A directory of its own, not the
+      # one you log in with yourself.
+      - ${SUPERVISOR_CLAUDE_DIR:-./claude}:/claude
+      # What the instance is, read once at start.
+      - ./supervisor.config.json:/app/supervisor.config.json:ro
+      # The night's own record: the runs, the Attempts, and everything they
+      # printed. Kept in a volume so a rebuilt image still knows what happened.
+      - supervisor-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4317/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  supervisor-data:

@@ -3,6 +3,13 @@
 .env.*
 !.env.example
 
+# What one deployment is. Copied from the example beside it and filled in.
+supervisor.config.json
+
+# Where a container deployment keeps the Claude credentials its nights run on,
+# unless it was pointed somewhere else.
+/claude/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,0 +1,15 @@
+{
+  "attemptBudget": 2,
+  "source": {
+    "type": "local",
+    "directory": "/project/.scratch/issues"
+  },
+  "safety": {
+    "consecutiveFailures": 3
+  },
+  "project": {
+    "directory": "/project",
+    "verify": ["npm run typecheck", "npm test"],
+    "pushCheckpoints": true
+  }
+}
