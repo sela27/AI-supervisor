@@ -13,7 +13,7 @@ A tracer-bullet vertical slice of work with acceptance criteria and blocking edg
 _Avoid_: task, issue (reserve "issue" for the GitHub representation)
 
 **Ticket Source**:
-Where the tickets of a given queue live, and where their outcomes are written back — either GitHub Issues or local ticket files. A queue reads from exactly one source, never both: a run reading from two would have no single place its outcomes belong, and no single answer to what is done.
+Where the tickets of a given queue live, and where their outcomes are written back, as fully as the source can carry them — a ticket file gets the whole account of the run that settled it, and a GitHub issue the comment that closes it. Either GitHub Issues or local ticket files. A queue reads from exactly one source, never both: a run reading from two would have no single place its outcomes belong, and no single answer to what is done.
 
 **Queue**:
 The ordered list of tickets the Supervisor will execute, discovered automatically from the Ticket Source by dependency order, and editable by the user before the run starts.
@@ -54,7 +54,7 @@ Verification's optional second stage: a Run of its own that reads what an Attemp
 _Avoid_: check (that is a verification command), gate, second opinion
 
 **Checkpoint**:
-The commit that ends a successful ticket. A failed ticket's changes are discarded back to the last Checkpoint.
+The commit that ends a successful ticket's work, and the one everything else points at: the ticket file names it, the closing issue comment names it, and the Dashboard shows it. Where the tickets live among the project's own files the write-back rides into the Checkpoint, and the one thing it cannot carry is the Checkpoint's own name — a file inside a commit cannot name the commit it is inside — so that follows in a commit of its own, right behind. A failed ticket's changes are discarded back to the last Checkpoint, or to that record of it where there is one: the record is the Supervisor's own account of a ticket that succeeded, and no later failure may take it back off.
 
 **Skipped**:
 A ticket the run never attempted — either because a ticket it was waiting on failed, or because the user took it out while the run was under way. Skipping is transitive: everything downstream of a skipped ticket is skipped too. A skipped ticket is not a failed one — nothing was tried, and nothing is written back to the Ticket Source. A ticket skipped by the user stays skipped even when the ticket that gated it is retried; their decision is not something the queue undoes for them.

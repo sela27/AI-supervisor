@@ -9,7 +9,7 @@ import {
 
 import { messageOf } from "../errors.js";
 import { asRecord } from "../json.js";
-import type { AttemptReview } from "../verification/review.js";
+import type { ReviewAnswer } from "../verification/review.js";
 import type { ReviewOutcome, ReviewRequest, RunOutcome, RunRequest, Runner } from "./runner.js";
 
 /**
@@ -191,7 +191,7 @@ function feedbackBlock(failure: string): string[] {
   ];
 }
 
-/** The only two shapes a verdict may come back in, asked for of the SDK itself. */
+/** The only shape an answer may come back in, asked for of the SDK itself. */
 const VERDICT_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
@@ -200,8 +200,15 @@ const VERDICT_SCHEMA: Record<string, unknown> = {
       type: "string",
       description: "Why, in a sentence or two the next attempt could act on.",
     },
+    criteriaMet: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "The acceptance criteria the work meets, each copied exactly as it is written above. " +
+        "Leave out any you could not judge from what you were shown.",
+    },
   },
-  required: ["verdict", "reasoning"],
+  required: ["verdict", "reasoning", "criteriaMet"],
   additionalProperties: false,
 };
 
@@ -238,6 +245,9 @@ function reviewPromptFor(request: ReviewRequest): string {
     `Read whatever else you need of the project to judge it, and change nothing:`,
     `you are reviewing the work, not finishing it.`,
     `Approve work that meets the acceptance criteria, and reject work that does not.`,
+    `Name in criteriaMet the criteria you judged met, copied exactly, and leave out`,
+    `any you could not judge from what you were shown — the ones you name are`,
+    `ticked on the user's own ticket, and the rest are left for them to tick.`,
   ].join("\n");
 }
 
@@ -280,11 +290,11 @@ function settleReview(transcript: Transcript): ReviewOutcome {
  * needs to go and turn the review off or fix it.
  */
 function unjudged(reasoning: string, output: string): ReviewOutcome {
-  return { status: "reviewed", verdict: "rejected", reasoning, output };
+  return { status: "reviewed", verdict: "rejected", reasoning, criteriaMet: [], output };
 }
 
-/** The verdict the review was asked for, when it came back as one. */
-function verdictOf(result: ResultMessage): AttemptReview | undefined {
+/** The answer the review was asked for, when it came back as one. */
+function verdictOf(result: ResultMessage): ReviewAnswer | undefined {
   if (result.subtype !== "success" || result.is_error) return undefined;
 
   const said = asRecord(result.structured_output);
@@ -293,7 +303,19 @@ function verdictOf(result: ResultMessage): AttemptReview | undefined {
   return {
     verdict: said.verdict,
     reasoning: typeof said.reasoning === "string" ? said.reasoning.trim() : "",
+    criteriaMet: criteriaOf(said.criteriaMet),
   };
+}
+
+/**
+ * The criteria the review named, as far as they are words at all. A review that
+ * answered the verdict and made a mess of the list has still judged the work;
+ * what it named unusably simply ticks nothing.
+ */
+function criteriaOf(named: unknown): string[] {
+  if (!Array.isArray(named)) return [];
+
+  return named.filter((text): text is string => typeof text === "string" && text.trim() !== "");
 }
 
 /** Decides what the finished Run amounts to. */

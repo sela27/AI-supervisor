@@ -70,13 +70,17 @@ export function runSucceeded(result = "Done."): SDKMessage {
  * The reasoning is in the text as well, because that is where the CLI puts it —
  * but the structured answer is the one the Supervisor reads.
  */
-export function reviewSaid(verdict: "approved" | "rejected", reasoning: string): SDKMessage {
+export function reviewSaid(
+  verdict: "approved" | "rejected",
+  reasoning: string,
+  criteriaMet: unknown = [],
+): SDKMessage {
   return fragment({
     type: "result",
     subtype: "success",
     is_error: false,
     result: reasoning,
-    structured_output: { verdict, reasoning },
+    structured_output: { verdict, reasoning, criteriaMet },
   });
 }
 

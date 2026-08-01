@@ -5,7 +5,7 @@ import { GitError, openRepository, type GitRepository } from "../git/repository.
 import type { ReviewOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
 import type { SourceSelection, TicketSource } from "../tickets/source.js";
-import { isDone, type Ticket } from "../tickets/ticket.js";
+import { isDone, type Ticket, type TicketReview } from "../tickets/ticket.js";
 import type { ReviewSettings } from "../verification/review.js";
 import { verify } from "../verification/verifier.js";
 import { downstreamOf } from "./dependents.js";
@@ -1187,9 +1187,11 @@ async function attemptTicket(queued: Queued, context: RunContext): Promise<void>
   await clearEarlierFailure(queued, context);
   queued.entry.state = "running";
 
-  let refusal = await attempt(queued, undefined, context);
-  for (let spent = 1; refusal !== undefined && spent < context.attemptBudget; spent += 1) {
-    refusal = await attempt(queued, feedbackOn(refusal), context);
+  let attempted = await attempt(queued, undefined, context);
+  let spent = 1;
+  while (attempted.refusal !== undefined && spent < context.attemptBudget) {
+    attempted = await attempt(queued, feedbackOn(attempted.refusal), context);
+    spent += 1;
   }
 
   // The run's own tally, kept in the one place both endings are known. A ticket a
@@ -1197,16 +1199,16 @@ async function attemptTicket(queued: Queued, context: RunContext): Promise<void>
   // run's allowance nothing.
   context.ticketsRun += 1;
 
-  if (refusal !== undefined) {
+  if (attempted.refusal !== undefined) {
     context.failuresInARow += 1;
-    await failTicket(queued, refusal.reason, context);
+    await failTicket(queued, attempted.refusal.reason, context);
     return;
   }
 
   // One ticket working is the whole of the evidence that the project is not
   // systematically broken, which is all the failure stop was ever counting.
   context.failuresInARow = 0;
-  await checkpoint(queued, context);
+  await checkpoint(queued, attempted.review, context);
 }
 
 /**
@@ -1254,7 +1256,7 @@ async function attempt(
   queued: Queued,
   previousFailure: string | undefined,
   context: RunContext,
-): Promise<Refusal | undefined> {
+): Promise<Attempted> {
   const { ticket } = queued;
 
   const before = await context.repository.headCommit();
@@ -1299,20 +1301,30 @@ async function attempt(
     review: review === undefined ? null : { verdict: review.verdict, reasoning: review.reasoning },
   });
 
-  if (refusal === undefined) return undefined;
+  if (refusal !== undefined) {
+    // A refused Attempt is thrown back the moment it is refused, whether the
+    // ticket has another go coming or has just run out of them: nothing it left
+    // behind may reach the next Run, and nothing may reach the branch either.
+    await context.repository.resetTo(context.restorePoint);
+    return { refusal, review: undefined };
+  }
 
-  // A refused Attempt is thrown back the moment it is refused, whether the ticket
-  // has another go coming or has just run out of them: nothing it left behind may
-  // reach the next Run, and nothing may reach the branch either.
-  await context.repository.resetTo(context.restorePoint);
-  return refusal;
+  return { refusal: undefined, review: approvalOf(review) };
 }
 
 /** Ends a verified ticket: the write-back, the Checkpoint, and the push. */
-async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
+async function checkpoint(
+  queued: Queued,
+  review: TicketReview | undefined,
+  context: RunContext,
+): Promise<void> {
   const { entry, ticket } = queued;
 
-  await context.source.markDone(ticket);
+  await context.source.markDone(ticket, {
+    branch: context.run.branch,
+    checks: context.project.verify,
+    review,
+  });
   // The write-back, and anything the Run left uncommitted, ride along in the
   // Checkpoint. A source that keeps its tickets elsewhere leaves nothing to
   // commit; there the Run's own last commit is what ends the ticket.
@@ -1321,15 +1333,32 @@ async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
   entry.state = "succeeded";
   moveRestorePoint(context, entry.checkpoint);
 
-  // Last, once the ticket has finished being a ticket: the Checkpoint goes out
-  // before the next ticket is attempted, so the remote is never more than one
-  // ticket behind the work.
+  // Once the ticket has finished being a ticket: the Checkpoint goes out before
+  // the next ticket is attempted, so the remote is never more than one ticket
+  // behind the work.
   await pushCheckpoint(context);
   // And then the source is told where the work went. Unlike the push, a source
   // that will not take this ends the run: done-ness lives in the source, so a
   // Supervisor that cannot record it there would go on to spend the night on
   // tickets the next run would have every reason to do all over again.
   await context.source.recordCheckpoint(ticket, entry.checkpoint);
+  await recordOutsideTheCheckpoint(ticket, context);
+}
+
+/**
+ * Commits the one line of the write-back that could not go into the Checkpoint:
+ * the Checkpoint's own name, which nothing could know until it existed. Left
+ * lying about, the next refused Attempt's reset would take it straight back off.
+ *
+ * A source that keeps its tickets anywhere but the project leaves nothing to
+ * commit here, and the Checkpoint is the last word on the ticket as it was.
+ */
+async function recordOutsideTheCheckpoint(ticket: Ticket, context: RunContext): Promise<void> {
+  const recorded = await context.repository.commitEverything(`Recorded: ${ticket.title}`);
+  if (recorded === undefined) return;
+
+  moveRestorePoint(context, recorded);
+  await pushCheckpoint(context);
 }
 
 /**
@@ -1405,6 +1434,29 @@ function liftsAt(resetAt: Date | null): string {
 interface Refusal {
   reason: string;
   output: string;
+}
+
+/** What one Attempt came to, and — where it stands — what a review made of it. */
+interface Attempted {
+  /** Why Verification refused it. Nothing at all where the Attempt stands. */
+  refusal: Refusal | undefined;
+  /**
+   * What the review that let it stand said, for the ticket to be written back
+   * with. Nothing where no reviewer saw it, and nothing on a refusal: there is
+   * no ticket ending to give an account of.
+   */
+  review: TicketReview | undefined;
+}
+
+/**
+ * What an approval leaves for the write-back. Nothing where no reviewer saw the
+ * Attempt — a review that was never asked for and one that named no criterion
+ * must not read alike on the ticket.
+ */
+function approvalOf(review: ReviewOutcome | undefined): TicketReview | undefined {
+  if (review?.status !== "reviewed" || review.verdict !== "approved") return undefined;
+
+  return { reasoning: review.reasoning, criteriaMet: review.criteriaMet };
 }
 
 /**

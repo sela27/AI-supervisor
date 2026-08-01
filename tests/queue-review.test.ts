@@ -2,13 +2,15 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { instanceWith } from "./helpers/config-file.js";
+import { reviewingInstance } from "./helpers/config-file.js";
 import { createTestProject, type TestProject } from "./helpers/project.js";
 import { readAttempts, startRun, stateOf, ticketOf, waitForQueue } from "./helpers/queue.js";
 import {
+  approves,
   commitsWork,
   fakeRunner,
   leavesBrokenWork,
+  refuses,
   type FakeReviewBehaviour,
 } from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
@@ -25,19 +27,6 @@ afterEach(async () => {
 
 async function oneTicketProject(): Promise<TestProject> {
   return createTestProject({ "01-boot-the-app.md": ticketFile({ title: "01 — Boot the app" }) });
-}
-
-/** An instance that was told to put every verified Attempt in front of a reviewer. */
-function reviewingInstance(): Promise<string> {
-  return instanceWith({ review: { enabled: true } });
-}
-
-function approves(reasoning = "It does what the ticket asked."): FakeReviewBehaviour {
-  return () => ({ status: "reviewed", verdict: "approved", reasoning, output: "" });
-}
-
-function refuses(reasoning: string): FakeReviewBehaviour {
-  return () => ({ status: "reviewed", verdict: "rejected", reasoning, output: "" });
 }
 
 /** A reviewer that turns the work down once and is satisfied with the next go. */
@@ -80,7 +69,7 @@ test("an approved attempt succeeds like any other, checkpoint and write-back and
   const ticket = ticketOf(finished, "01-boot-the-app");
   expect(ticket?.state).toBe("succeeded");
   expect(ticket?.failure).toBeNull();
-  expect(await project.head()).toBe(ticket?.checkpoint);
+  expect(await project.head("HEAD~1")).toBe(ticket?.checkpoint);
   expect(await project.commitSubjects()).toContain("Checkpoint: Boot the app");
   expect(await project.read("tickets/01-boot-the-app.md")).toContain("**Status:** done");
 });
@@ -90,7 +79,7 @@ test("nothing is put in front of a reviewer until the project's own checks have 
   const runner = fakeRunner(commitsWork(project), approves());
   supervisor = await startTestSupervisor({
     runner,
-    configDirectory: await instanceWith({ review: { enabled: true }, attemptBudget: 1 }),
+    configDirectory: await reviewingInstance({ attemptBudget: 1 }),
   });
 
   await startRun(supervisor, project, { verify: ["exit 7"] });
@@ -109,7 +98,7 @@ test("an attempt that never ran is never reviewed either", async () => {
   const runner = fakeRunner(leavesBrokenWork(project), approves());
   supervisor = await startTestSupervisor({
     runner,
-    configDirectory: await instanceWith({ review: { enabled: true }, attemptBudget: 1 }),
+    configDirectory: await reviewingInstance({ attemptBudget: 1 }),
   });
 
   await startRun(supervisor, project);
@@ -159,7 +148,7 @@ test("a reviewer that turns the work down without saying why still says so plain
   const project = await oneTicketProject();
   supervisor = await startTestSupervisor({
     runner: fakeRunner(commitsWork(project), refuses("   ")),
-    configDirectory: await instanceWith({ review: { enabled: true }, attemptBudget: 1 }),
+    configDirectory: await reviewingInstance({ attemptBudget: 1 }),
   });
 
   await startRun(supervisor, project);

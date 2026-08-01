@@ -11,6 +11,11 @@ export async function instanceWith(settings: unknown): Promise<string> {
   return directory;
 }
 
+/** An instance that puts every verified Attempt in front of a reviewer. */
+export function reviewingInstance(settings: object = {}): Promise<string> {
+  return instanceWith({ ...settings, review: { enabled: true } });
+}
+
 /** An instance that was told nothing, the way one with no config file starts. */
 export async function instanceWithoutConfigFile(): Promise<string> {
   return createTempDirectory("supervisor-config-");

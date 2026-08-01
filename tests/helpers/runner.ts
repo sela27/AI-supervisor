@@ -62,6 +62,7 @@ export function fakeRunner(
           status: "reviewed",
           verdict: "approved",
           reasoning: "It meets the ticket.",
+          criteriaMet: [],
           output: "",
         }
       );
@@ -69,6 +70,22 @@ export function fakeRunner(
   };
 
   return runner;
+}
+
+/**
+ * A reviewer that lets the work stand, having judged the criteria it names met.
+ * Naming none is what a review with nothing to say about the criteria answers.
+ */
+export function approves(
+  reasoning = "It does what the ticket asked.",
+  criteriaMet: string[] = [],
+): FakeReviewBehaviour {
+  return () => ({ status: "reviewed", verdict: "approved", reasoning, criteriaMet, output: "" });
+}
+
+/** A reviewer that turns the work down, for the reason it gives. */
+export function refuses(reasoning: string, criteriaMet: string[] = []): FakeReviewBehaviour {
+  return () => ({ status: "reviewed", verdict: "rejected", reasoning, criteriaMet, output: "" });
 }
 
 /** A Runner that does the ticket's work and commits it, as a real Run would. */

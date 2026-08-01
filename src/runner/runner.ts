@@ -1,5 +1,5 @@
 import type { Ticket } from "../tickets/ticket.js";
-import type { AttemptReview } from "../verification/review.js";
+import type { ReviewAnswer } from "../verification/review.js";
 
 /** Everything a Run has to work from: one ticket, and the project it applies to. */
 export interface RunRequest {
@@ -55,7 +55,7 @@ export interface ReviewRequest {
  * unjudged as one whose own Run was cut short.
  */
 export type ReviewOutcome =
-  | ({ status: "reviewed"; output: string } & AttemptReview)
+  | ({ status: "reviewed"; output: string } & ReviewAnswer)
   | { status: "limit-hit"; resetAt: Date | null; output: string };
 
 /** Executes exactly one Attempt: a single headless Claude Code Run for one ticket. */

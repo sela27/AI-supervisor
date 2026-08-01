@@ -261,6 +261,45 @@ ticket, and several may be listed comma-separated or as bullets under the field.
 `**Status:** done` marks a ticket finished — it is never runnable, and it no longer blocks
 its dependents.
 
+A ticket the run settles is written back into that same file, so opening it in the morning is
+the whole of what it takes to find out what happened to it:
+
+```markdown
+**Status:** done
+
+- [x] It boots
+- [ ] It is tested
+
+## Supervisor run
+
+**Checkpoint:** `4a77884d9954f7ddc0fbcad56bee9dac6c59d0b2`
+
+**Branch:** `supervisor/2026-08-01-03-00`
+
+**Verification:** the project's own checks all passed — `npm test`, `npm run typecheck`
+
+**Review:** approved, and ticked 1 of the acceptance criteria
+
+> It boots and the endpoint answers, but nothing covers either.
+```
+
+A criterion comes back ticked only where something actually judged it met, which means the
+[review](#having-the-work-read-before-it-stands) and nothing else: the `verify` commands pass
+or fail over the whole Attempt, so they judge no criterion one by one. With reviews off — the
+default — the block says so and every box is left exactly as you wrote it. A criterion the
+review names that does not match one of the ticket's own ticks nothing.
+
+Everything the reviewer wrote goes in quoted, and the run's own lines are fields of names the
+file's own fields do not use, so a `# heading`, a `**Blocked by:**` or a stray `- [ ]` in a
+reviewer's prose can never come back as the ticket's title, a blocking edge or a criterion.
+A second run over the same ticket replaces the block rather than stacking another one on.
+
+The `**Checkpoint:**` line arrives a moment after the rest. Where the tickets live among the
+project's own files the write-back rides into the very commit it names, and a file inside a
+commit cannot name the commit it is inside — so the name follows in a commit of its own,
+`Recorded: <title>`, right behind the Checkpoint. Tickets kept outside the project get the
+same block with nothing to commit at all.
+
 ## Tickets on GitHub
 
 The other kind of Ticket Source is a repository's own issues, which is where a tracked
@@ -361,10 +400,12 @@ up, and starting over them would strand a night's work on a branch nobody was to
 An Attempt only counts as succeeded when **every** `verify` command exits 0 **and** the
 Attempt left at least one new commit — what Claude says about itself is never enough, which
 is why at least one command is required. A verified ticket then ends in a Checkpoint commit,
-and the outcome is written back to the Ticket Source. Ticket files kept inside the project
-are rewritten before the Checkpoint and committed along with it; kept outside it, the Run's
-own last commit ends the ticket. A GitHub issue is closed after the Checkpoint has been made —
-and pushed, where the project pushes — because the comment that closes it names that commit.
+and [the outcome is written back](#previewing-a-queue) to the Ticket Source. Ticket files kept
+inside the project are rewritten before the Checkpoint and committed along with it, with the
+Checkpoint's own name following in a `Recorded: <title>` commit behind it; kept outside it,
+the Run's own last commit ends the ticket. A GitHub issue is closed after the Checkpoint has
+been made — and pushed, where the project pushes — because the comment that closes it names
+that commit.
 
 A Ticket Source that will not take the write-back ends the run, unlike a remote that will not
 take a push: done-ness lives in the source, so a Supervisor that cannot record it there would
@@ -618,6 +659,12 @@ own words are what the next Attempt is told it was refused for. A ticket whose e
 a reviewer turned down fails with those words, written back to the Ticket Source like any
 other failure. Either way the verdict and the reasoning are kept with the Attempt they
 judged, and shown against it on the dashboard.
+
+The reviewer is also asked which of the ticket's acceptance criteria the work meets, and it
+is the only thing in a night that is: the `verify` commands pass or fail over the whole
+Attempt. On a ticket file, the criteria it names come back
+[ticked](#previewing-a-queue) — copied exactly, so a paraphrase ticks nothing — and every
+criterion it said nothing about is left as you wrote it.
 
 Nothing the project's own commands already refused is ever shown to a reviewer: work that
 does not build is not work a review has anything to say about, and asking would spend quota

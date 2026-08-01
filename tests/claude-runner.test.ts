@@ -263,7 +263,7 @@ test("output is handed over as it arrives, so a Run can be watched live", async 
 test("a review that reached a verdict is handed back as one, reasoning and all", async () => {
   const recorded = recordedRun(
     assistantSaying("Reading the diff."),
-    reviewSaid("rejected", "Nothing about the health endpoint is tested."),
+    reviewSaid("rejected", "Nothing about the health endpoint is tested.", ["It boots"]),
   );
 
   const outcome = await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
@@ -272,8 +272,21 @@ test("a review that reached a verdict is handed back as one, reasoning and all",
     status: "reviewed",
     verdict: "rejected",
     reasoning: "Nothing about the health endpoint is tested.",
+    criteriaMet: ["It boots"],
     output: "Reading the diff.",
   });
+});
+
+test("a review is asked which criteria it judged met, and answers unusably at worst", async () => {
+  const recorded = recordedRun(reviewSaid("approved", "Both hold.", ["It boots", 7, "  "]));
+
+  const outcome = await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  const prompt = recorded.prompts[0] ?? "";
+  expect(prompt).toContain("criteriaMet");
+  // A criterion named as something other than words ticks nothing, and the
+  // verdict itself is none the worse for it.
+  expect(outcome).toMatchObject({ verdict: "approved", criteriaMet: ["It boots"] });
 });
 
 test("the reviewer is shown the ticket, its criteria and the whole of the work", async () => {

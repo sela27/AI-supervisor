@@ -17,6 +17,7 @@ export function unavailableRunner(): Runner {
       status: "reviewed",
       verdict: "rejected",
       reasoning: NO_RUNNER,
+      criteriaMet: [],
       output: "",
     }),
   };

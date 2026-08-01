@@ -41,8 +41,10 @@ test("the run branch is published with the first Checkpoint, tracking the remote
 
   expect(await remote.branches()).toEqual([branch]);
   expect(await remote.commitSubjects(branch)).toEqual([
+    "Recorded: Add search",
     "Checkpoint: Add search",
     "Work for 02-add-search",
+    "Recorded: Boot the app",
     "Checkpoint: Boot the app",
     "Work for 01-boot-the-app",
     "Initial commit",
@@ -126,7 +128,8 @@ test("a limit-interrupted Attempt's discarded work never reaches the remote eith
   // The remote stands at the last Checkpoint, exactly where the branch was thrown
   // back to — the quota running out publishes nothing.
   const published = await remote.commitSubjects(branch);
-  expect(published[0]).toBe("Checkpoint: Boot the app");
+  expect(published[0]).toBe("Recorded: Boot the app");
+  expect(published).toContain("Checkpoint: Boot the app");
   expect(published).not.toContain("Half of 02-add-search");
   expect(await project.head()).toBe(await project.head(`origin/${branch}`));
 });

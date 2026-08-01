@@ -58,7 +58,7 @@ test("a failed attempt is given another go, and a ticket that works this time su
   const ticket = ticketOf(finished, "01-boot-the-app");
   expect(ticket?.state).toBe("succeeded");
   expect(ticket?.failure).toBeNull();
-  expect(await project.head()).toBe(ticket?.checkpoint);
+  expect(await project.head("HEAD~1")).toBe(ticket?.checkpoint);
   expect(await project.commitSubjects()).toContain("Checkpoint: Boot the app");
   expect(await project.commitSubjects()).not.toContain("Broken work for 01-boot-the-app");
   expect(await project.read("tickets/01-boot-the-app.md")).toContain("**Status:** done");

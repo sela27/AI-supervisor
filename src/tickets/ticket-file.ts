@@ -1,5 +1,5 @@
-import { CHECKBOX_LINE, readAcceptanceCriteria } from "./criteria.js";
-import type { AcceptanceCriterion } from "./ticket.js";
+import { asComparableCriterion, CHECKBOX_LINE, readAcceptanceCriteria } from "./criteria.js";
+import type { AcceptanceCriterion, TicketResult, TicketReview } from "./ticket.js";
 
 /** One ticket file, read but not yet related to the others in its directory. */
 export interface ParsedTicket {
@@ -22,7 +22,16 @@ export type ParsedTicketFile =
 const TITLE_LINE = /^#\s+(.+)$/;
 const NUMBER_PREFIX = /^\d+\s*[—–-]\s*/;
 const STATUS_LINE = /^\*\*Status:\*\*/i;
+
+/**
+ * The two accounts the Supervisor gives of itself at the foot of a ticket, and
+ * the only lines of the file that are ever its own to rewrite. A ticket carries
+ * one of them or neither: the account of the run that settled it, or the reason
+ * it could not be settled at all.
+ */
 const FAILURE_HEADING = "## Supervisor failure";
+const RESULT_HEADING = "## Supervisor run";
+const SUPERVISOR_HEADINGS = [FAILURE_HEADING, RESULT_HEADING];
 
 export function parseTicketFile(fileName: string, contents: string): ParsedTicketFile {
   const lines = contents.split(/\r?\n/);
@@ -62,10 +71,7 @@ export function parseTicketFile(fileName: string, contents: string): ParsedTicke
       blockedBy: blockedBy.references,
       // Only checkboxes below the fields count, so a checklist inside the
       // "What to build" prose is never mistaken for an acceptance criterion.
-      acceptanceCriteria: readAcceptanceCriteria(
-        lines,
-        Math.max(status.index, blockedBy.index) + 1,
-      ),
+      acceptanceCriteria: readAcceptanceCriteria(lines, below(status.index, blockedBy.index)),
     },
   };
 }
@@ -85,33 +91,150 @@ export function withStatus(contents: string, status: string): string | undefined
 
 /**
  * Puts the run's account of the failure at the foot of the ticket, replacing the
- * account left by any earlier failure rather than piling another one on. Neither
- * the heading nor the quoted summary reads as a title or a checkbox, so the file
+ * account left by any earlier run rather than piling another one on. Neither the
+ * heading nor the quoted summary reads as a title or a checkbox, so the file
  * still parses back to the same ticket.
  */
 export function withFailure(contents: string, summary: string): string {
-  const lines = contents.split(/\r?\n/);
-  const existing = lines.findIndex((line) => line.trim() === FAILURE_HEADING);
-  const kept = existing === -1 ? [...lines] : lines.slice(0, existing);
-
-  while (kept.at(-1)?.trim() === "") kept.pop();
-
-  return [...kept, "", FAILURE_HEADING, "", ...quoted(summary), ""].join("\n");
+  return withAccount(contents, FAILURE_HEADING, quoted(summary));
 }
 
 /**
- * Takes an earlier run's account of a failure back off the ticket, for a ticket
- * that is about to be attempted again. Leaving it there would leave a ticket
- * that went on to succeed still carrying the reason it did not.
+ * Puts the run's account of the ticket at the foot of the file: where the work
+ * went, and what was run over it before it was allowed to stand. Everything the
+ * reviewer wrote goes in as a quotation, so a stray `- [ ]` of its own never
+ * comes back as one of the ticket's acceptance criteria.
+ *
+ * The Checkpoint is deliberately not among it — see `withCheckpoint`.
  */
-export function withoutFailure(contents: string): string {
-  const lines = contents.split(/\r?\n/);
-  const existing = lines.findIndex((line) => line.trim() === FAILURE_HEADING);
-  if (existing === -1) return contents;
+export function withRunResult(contents: string, result: TicketResult): string {
+  return withAccount(contents, RESULT_HEADING, [
+    `**Branch:** \`${oneLine(result.branch)}\``,
+    "",
+    `**Verification:** ${verificationSaid(result.checks)}`,
+    "",
+    `**Review:** ${reviewSaid(result.review)}`,
+    ...saidWhy(result.review),
+  ]);
+}
 
-  const kept = lines.slice(0, existing);
+/**
+ * Names the Checkpoint in the account already at the foot of the file — the one
+ * thing the write-back could not know when it was written. Where the tickets
+ * live among the project's own files the account rides into the very commit it
+ * names, and a file inside a commit cannot name the commit it is inside; so the
+ * line is added afterwards, once there is a commit to name.
+ *
+ * A file with no account of a run in it has nothing to name a Checkpoint in, and
+ * is left exactly as it stands.
+ */
+export function withCheckpoint(contents: string, checkpoint: string): string {
+  const lines = contents.split(/\r?\n/);
+  const heading = lines.findIndex((line) => line.trim() === RESULT_HEADING);
+  if (heading === -1) return contents;
+
+  const named = `**Checkpoint:** \`${oneLine(checkpoint)}\``;
+  return [...lines.slice(0, heading + 1), "", named, ...lines.slice(heading + 1)].join("\n");
+}
+
+/**
+ * Ticks the acceptance criteria something actually judged met, and leaves every
+ * other line exactly as the user wrote it. A criterion the run cannot match to
+ * one of the ticket's own ticks nothing: a reviewer paraphrasing a criterion, or
+ * inventing one, must never end up ticking a box beside a different claim.
+ */
+export function withTickedCriteria(contents: string, met: readonly string[]): string {
+  if (met.length === 0) return contents;
+
+  const lines = contents.split(/\r?\n/);
+  const from = criteriaBegin(lines);
+  if (from === undefined) return contents;
+
+  const judged = new Set(met.map(asComparableCriterion));
+  return lines.map((line, index) => (index < from ? line : ticked(line, judged))).join("\n");
+}
+
+/**
+ * Takes the Supervisor's own account back off a ticket that is about to be
+ * attempted again. A ticket that goes on to succeed still carrying the reason it
+ * did not is a lie the morning's triage reads.
+ */
+export function withoutSupervisorAccount(contents: string): string {
+  const lines = contents.split(/\r?\n/);
+  if (accountBegins(lines) === -1) return contents;
+  return [...withoutAccount(lines), ""].join("\n");
+}
+
+/** The Supervisor's own account of the ticket, over whatever it left there before. */
+function withAccount(contents: string, heading: string, body: string[]): string {
+  const kept = withoutAccount(contents.split(/\r?\n/));
+  return [...kept, "", heading, "", ...body, ""].join("\n");
+}
+
+function withoutAccount(lines: string[]): string[] {
+  const begins = accountBegins(lines);
+  const kept = begins === -1 ? [...lines] : lines.slice(0, begins);
+
   while (kept.at(-1)?.trim() === "") kept.pop();
-  return [...kept, ""].join("\n");
+  return kept;
+}
+
+function accountBegins(lines: string[]): number {
+  return lines.findIndex((line) => SUPERVISOR_HEADINGS.includes(line.trim()));
+}
+
+function verificationSaid(checks: readonly string[]): string {
+  const named = checks.map((check) => `\`${oneLine(check)}\``).join(", ");
+  return `the project's own checks all passed — ${named}`;
+}
+
+function reviewSaid(review: TicketReview | undefined): string {
+  // Said of the run rather than of the boxes: a tick left over from a run before
+  // this one is still a tick, and this line is not the place to contradict it.
+  if (review === undefined) {
+    return "not asked for, so this run judged no acceptance criterion of its own";
+  }
+
+  const met = review.criteriaMet.length;
+  return met === 0
+    ? "approved, without naming an acceptance criterion it had judged met"
+    : `approved, and ticked ${met} of the acceptance criteria`;
+}
+
+/** The reviewer's own words, where it gave any. */
+function saidWhy(review: TicketReview | undefined): string[] {
+  const said = review?.reasoning.trim() ?? "";
+  return said === "" ? [] : ["", ...quoted(said)];
+}
+
+function ticked(line: string, judged: Set<string>): string {
+  const text = CHECKBOX_LINE.exec(line.trim())?.[2];
+  if (text === undefined || !judged.has(asComparableCriterion(text))) return line;
+
+  return line.replace(/\[[ xX]\]/, "[x]");
+}
+
+/** Where a file's acceptance criteria begin, for a file that has the fields at all. */
+function criteriaBegin(lines: string[]): number | undefined {
+  const status = findField(lines, "Status");
+  const blockedBy = findField(lines, "Blocked by");
+  if (status === undefined || blockedBy === undefined) return undefined;
+
+  return below(status.index, blockedBy.index);
+}
+
+/** The first line past both fields — where a ticket's own checkboxes start. */
+function below(status: number, blockedBy: number): number {
+  return Math.max(status, blockedBy) + 1;
+}
+
+/**
+ * A value written into a field line, kept to the line it was written on. A
+ * command or a branch with a newline in it would otherwise put whatever follows
+ * it at the start of a line, where the file's own fields live.
+ */
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 /**

@@ -6,12 +6,15 @@ import type { TicketSource } from "./source.js";
 import {
   parseTicketFile,
   stripTicketNumberPrefix,
+  withCheckpoint,
   withFailure,
-  withoutFailure,
+  withoutSupervisorAccount,
+  withRunResult,
   withStatus,
+  withTickedCriteria,
   type ParsedTicket,
 } from "./ticket-file.js";
-import type { Ticket } from "./ticket.js";
+import type { Ticket, TicketResult } from "./ticket.js";
 
 /**
  * A directory of ticket files as the tickets of one Queue — the source for a
@@ -21,11 +24,12 @@ export function localTicketSource(directory: string): TicketSource {
   return {
     discover: () => discoverLocalTickets(directory),
 
-    markDone: (ticket) => markLocalTicketDone(directory, ticket.id),
+    markDone: (ticket, result) => markLocalTicketDone(directory, ticket.id, result),
 
-    // The write-back is inside the Checkpoint already: the file was rewritten
-    // before the commit, and the commit swept it up along with the work.
-    recordCheckpoint: async () => {},
+    // Everything else is inside the Checkpoint already: the file was rewritten
+    // before the commit, and the commit swept it up along with the work. What is
+    // left is the name of that commit, which nothing could know until it existed.
+    recordCheckpoint: (ticket, checkpoint) => nameCheckpoint(directory, ticket.id, checkpoint),
 
     markFailed: (ticket, summary) => markLocalTicketFailed(directory, ticket.id, summary),
 
@@ -66,10 +70,33 @@ async function discoverLocalTickets(directory: string): Promise<Ticket[]> {
 
 /**
  * Records a finished ticket where done-ness belongs — in the Ticket Source itself,
- * so a restarted Supervisor still agrees about what is done.
+ * so a restarted Supervisor still agrees about what is done — along with the whole
+ * account of the run that finished it. Opening the file the morning after is meant
+ * to be the whole of what it takes to find out what happened to the ticket.
  */
-async function markLocalTicketDone(directory: string, ticketId: string): Promise<void> {
-  await rewriteTicketFile(directory, ticketId, (contents) => withStatus(contents, "done"));
+async function markLocalTicketDone(
+  directory: string,
+  ticketId: string,
+  result: TicketResult,
+): Promise<void> {
+  await rewriteTicketFile(directory, ticketId, (contents) => {
+    const updated = withStatus(contents, "done");
+    if (updated === undefined) return undefined;
+
+    // The criteria first: the account goes at the foot, and nothing in it is a
+    // checkbox for the ticking to reach.
+    const ticked = withTickedCriteria(updated, result.review?.criteriaMet ?? []);
+    return withRunResult(ticked, result);
+  });
+}
+
+/** Names the Checkpoint in the account, now that there is a commit to name. */
+async function nameCheckpoint(
+  directory: string,
+  ticketId: string,
+  checkpoint: string,
+): Promise<void> {
+  await rewriteTicketFile(directory, ticketId, (contents) => withCheckpoint(contents, checkpoint));
 }
 
 /**
@@ -99,7 +126,7 @@ async function clearLocalTicketFailure(
   status: string,
 ): Promise<void> {
   await rewriteTicketFile(directory, ticketId, (contents) =>
-    withStatus(withoutFailure(contents), status),
+    withStatus(withoutSupervisorAccount(contents), status),
   );
 }
 

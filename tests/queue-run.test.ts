@@ -81,13 +81,14 @@ test("each succeeded ticket ends in a Checkpoint commit and a done write-back", 
   const finished = await waitForQueue(supervisor, (queue) => queue.state === "completed");
 
   // Every Checkpoint is a real commit on the run branch, and the last one is where
-  // the branch now stands.
+  // the branch stands but for the record naming it — a ticket file inside a commit
+  // cannot name the commit it is inside, so its name follows in the next one.
   const commits = await project.commitSubjects();
   for (const ticket of finished.tickets) {
     expect(ticket.checkpoint).toMatch(/^[0-9a-f]{40}$/);
     expect(await project.head(ticket.checkpoint ?? "")).toBe(ticket.checkpoint);
   }
-  expect(finished.tickets.at(-1)?.checkpoint).toBe(await project.head());
+  expect(finished.tickets.at(-1)?.checkpoint).toBe(await project.head("HEAD~1"));
   expect(commits).toContain("Checkpoint: Boot the app");
   expect(commits).toContain("Checkpoint: Add search");
 

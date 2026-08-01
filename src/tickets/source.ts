@@ -1,7 +1,7 @@
 import type { GhCommand } from "./gh.js";
 import { githubTicketSource } from "./github-source.js";
 import { localTicketSource } from "./local-source.js";
-import type { Ticket } from "./ticket.js";
+import type { Ticket, TicketResult } from "./ticket.js";
 
 /**
  * Which Ticket Source a queue reads from, and where it lives. A queue picks
@@ -22,18 +22,19 @@ export interface TicketSource {
   discover(): Promise<Ticket[]>;
 
   /**
-   * Records the ticket finished. Said before the Checkpoint that ends it is made,
-   * so that a source keeping its tickets among the project's own files has its
-   * write-back committed along with the work it is about.
+   * Records the ticket finished, with the whole account of the run that finished
+   * it. Said before the Checkpoint that ends it is made, so that a source keeping
+   * its tickets among the project's own files has its write-back committed along
+   * with the work it is about.
    */
-  markDone(ticket: Ticket): Promise<void>;
+  markDone(ticket: Ticket, result: TicketResult): Promise<void>;
 
   /**
    * Names the commit the finished ticket ended in, once there is one to name.
    * Separate from `markDone` because the Checkpoint cannot exist until everything
-   * the write-back leaves in the project's files is inside it: a source that
-   * writes there is already in the commit and has nothing left to say, and a
-   * source that writes elsewhere has no other way to point at the work.
+   * the write-back leaves in the project's files is inside it: a file inside a
+   * commit cannot name the commit it is inside, and a source that writes
+   * elsewhere has no other way at all to point at the work.
    */
   recordCheckpoint(ticket: Ticket, checkpoint: string): Promise<void>;
 

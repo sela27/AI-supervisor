@@ -44,11 +44,13 @@ test("a failed attempt leaves the branch exactly at the last Checkpoint, with no
 
   const checkpoint = ticketOf(finished, "01-boot-the-app")?.checkpoint ?? "";
   expect(checkpoint).toMatch(/^[0-9a-f]{40}$/);
-  // Nothing of the failed attempt survives it: the only thing the branch has
-  // gained since the Checkpoint is the Supervisor's own note on the ticket.
-  expect(await project.git("diff", "--name-only", `${checkpoint}..HEAD`)).toBe(
+  // Nothing of the failed attempt survives it: all the branch has gained since
+  // the Checkpoint is the Supervisor's own notes on the two tickets — the name
+  // of that very Checkpoint on one, and the failure on the other.
+  expect((await project.git("diff", "--name-only", `${checkpoint}..HEAD`)).split("\n")).toEqual([
+    "tickets/01-boot-the-app.md",
     "tickets/02-add-search.md",
-  );
+  ]);
   expect(await project.commitSubjects()).not.toContain("Broken work for 02-add-search");
   expect(existsSync(join(project.directory, "02-add-search-half.txt"))).toBe(false);
   expect(existsSync(join(project.directory, "02-add-search-scratch.txt"))).toBe(false);
@@ -160,9 +162,10 @@ test("a failure never stops the tickets that do not depend on it", async () => {
     ["02-add-search", "skipped"],
     ["03-write-docs", "succeeded"],
   ]);
-  // The independent ticket got a real Checkpoint of its own, after the failure.
+  // The independent ticket got a real Checkpoint of its own, after the failure —
+  // with the record naming it following, as the last word on the branch.
   expect(await project.commitSubjects()).toContain("Checkpoint: Write docs");
-  expect(await project.head()).toBe(ticketOf(finished, "03-write-docs")?.checkpoint);
+  expect(await project.head("HEAD~1")).toBe(ticketOf(finished, "03-write-docs")?.checkpoint);
   expect(await project.read("tickets/03-write-docs.md")).toContain("**Status:** done");
 });
 
