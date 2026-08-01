@@ -10,6 +10,7 @@ import {
 import { messageOf } from "../errors.js";
 import { asRecord } from "../json.js";
 import type { ReviewAnswer } from "../verification/review.js";
+import { claudeCliLauncher } from "./cli.js";
 import type { ReviewOutcome, ReviewRequest, RunOutcome, RunRequest, Runner } from "./runner.js";
 import { spendOf, type Spend } from "./spend.js";
 
@@ -32,6 +33,17 @@ export const PERMISSION_MODES = [
   "auto",
 ] as const satisfies readonly PermissionMode[];
 
+/** Both ways of driving Claude Code, for validating configuration. */
+export const RUNNER_DRIVERS = ["sdk", "cli"] as const;
+
+/**
+ * Which of the two an instance drives its Runs through. The Agent SDK is the way
+ * in; the CLI beside it is the way in for a deployment the SDK cannot run in. It
+ * is the same Claude Code either way, and the same messages come back either way,
+ * so nothing above the Runner is told which one launched anything.
+ */
+export type RunnerDriver = (typeof RUNNER_DRIVERS)[number];
+
 export interface ClaudeCodeRunnerOptions {
   /** Which model every Run uses. Left out, the CLI picks its own. */
   model?: string;
@@ -40,6 +52,14 @@ export interface ClaudeCodeRunnerOptions {
    * so anything that stops to ask is a Run that never finishes.
    */
   permissionMode?: PermissionMode;
+  /** Which way this instance drives Claude Code. The Agent SDK unless it says. */
+  driver?: RunnerDriver;
+  /**
+   * How the CLI is run, executable first — `claude` on the PATH, as the container
+   * installs it. Tests point it at a recorded Run instead, the way `launch`
+   * stands in for the SDK, so the suite launches no Claude Code of either kind.
+   */
+  command?: readonly string[];
   launch?: RunLauncher;
 }
 
@@ -52,7 +72,7 @@ type ResultMessage = Extract<SDKMessage, { type: "result" }>;
  * Attempt stands is Verification's, here and in the review it is asked for.
  */
 export function claudeCodeRunner(options: ClaudeCodeRunnerOptions = {}): Runner {
-  const launch = options.launch ?? ((parameters) => query(parameters));
+  const launch = options.launch ?? drivenBy(options);
 
   return {
     run: async (request) => {
@@ -91,6 +111,17 @@ export function claudeCodeRunner(options: ClaudeCodeRunnerOptions = {}): Runner 
       return settleReview(transcript);
     },
   };
+}
+
+/**
+ * How this instance launches a Run. Everything past this point is the same for
+ * both — the messages, the outcomes, the reset time, what the Run spent — which
+ * is the whole of why an instance can fall back to the CLI and change nothing
+ * else about itself.
+ */
+function drivenBy(options: ClaudeCodeRunnerOptions): RunLauncher {
+  if (options.driver === "cli") return claudeCliLauncher(options.command);
+  return (parameters) => query(parameters);
 }
 
 /** What everything launched here has in common: where it runs, and how freely. */

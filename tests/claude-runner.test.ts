@@ -2,7 +2,6 @@ import { expect, test } from "vitest";
 
 import { claudeCodeRunner } from "../src/runner/claude-code.js";
 import type { ReviewRequest, RunRequest } from "../src/runner/runner.js";
-import type { Ticket } from "../src/tickets/ticket.js";
 import {
   assistantSaying,
   assistantUsing,
@@ -13,6 +12,7 @@ import {
   runErrored,
   runSucceeded,
 } from "./helpers/recorded-run.js";
+import { DIFF, reviewRequest, runRequest } from "./helpers/run-request.js";
 
 /**
  * The production Runner is the one seam below the HTTP API that the suite cannot
@@ -21,27 +21,15 @@ import {
  * Runs, asserting only the outcome the Supervisor is handed back.
  */
 
-const TICKET: Ticket = {
-  id: "01-boot-the-app",
-  title: "Boot the app",
-  status: "ready-for-agent",
-  blockedBy: [],
-  acceptanceCriteria: [
-    { text: "It boots", done: false },
-    { text: "It answers /api/health", done: false },
-  ],
-};
-
+/** Nothing is really launched here, so the project need only be somewhere to name. */
 const PROJECT = "/projects/under-supervision";
 
 function request(overrides: Partial<RunRequest> = {}): RunRequest {
-  return { ticket: TICKET, projectDirectory: PROJECT, ...overrides };
+  return runRequest(PROJECT, overrides);
 }
 
-const DIFF = ["diff --git a/src/main.ts b/src/main.ts", "+app.listen(4317);"].join("\n");
-
 function toReview(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
-  return { ticket: TICKET, projectDirectory: PROJECT, diff: DIFF, ...overrides };
+  return reviewRequest(PROJECT, overrides);
 }
 
 /** A Run that did the work and said so — three lines of transcript. */

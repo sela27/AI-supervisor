@@ -28,7 +28,8 @@ test("an instance with no config file to read keeps every default", async () => 
     logLevel: "info",
     // One retry per ticket, as the glossary has it.
     attemptBudget: 2,
-    runner: { permissionMode: "bypassPermissions" },
+    // The Agent SDK, which needs nothing of the deployment but what it brings.
+    runner: { permissionMode: "bypassPermissions", driver: "sdk" },
     // Willing to say anything, with nowhere to say it: pointing an instance at a
     // webhook is the whole of what it takes to start being told.
     notifications: { enabled: true, on: {} },
@@ -50,7 +51,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
     host: "127.0.0.1",
     logLevel: "debug",
     attemptBudget: 3,
-    runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
+    runner: { model: "claude-opus-5", permissionMode: "acceptEdits", driver: "cli" },
     source: { type: "local", directory: "./tickets" },
     notifications: {
       enabled: true,
@@ -74,7 +75,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
     host: "127.0.0.1",
     logLevel: "debug",
     attemptBudget: 3,
-    runner: { model: "claude-opus-5", permissionMode: "acceptEdits" },
+    runner: { model: "claude-opus-5", permissionMode: "acceptEdits", driver: "cli" },
     notifications: {
       enabled: true,
       webhook: "https://ntfy.sh/my-topic",
@@ -180,6 +181,23 @@ test("an unknown permission mode says which ones there are", async () => {
   const cwd = await instanceWith({ runner: { permissionMode: "yolo" } });
 
   expect(() => loadSupervisorConfig({ cwd, env: {} })).toThrow(/bypassPermissions/);
+});
+
+test("an instance can be told to drive its Runs through the CLI instead", async () => {
+  // The fallback exists for the deployment the Agent SDK cannot run in, which is
+  // exactly the thing one container differs from its image by — so the
+  // environment can say it without the image being rebuilt around it.
+  const sdk = await instanceWith({ runner: { driver: "sdk" } });
+  expect(loadSupervisorConfig({ cwd: sdk, env: {} }).runner.driver).toBe("sdk");
+  expect(
+    loadSupervisorConfig({ cwd: sdk, env: { SUPERVISOR_RUNNER_DRIVER: "cli" } }).runner.driver,
+  ).toBe("cli");
+
+  const nonsense = await instanceWith({ runner: { driver: "telepathy" } });
+  expect(() => loadSupervisorConfig({ cwd: nonsense, env: {} })).toThrow(/sdk, cli/);
+  expect(() =>
+    loadSupervisorConfig({ cwd: sdk, env: { SUPERVISOR_RUNNER_DRIVER: "telepathy" } }),
+  ).toThrow(/sdk, cli/);
 });
 
 test("a ticket source of a type that does not exist is refused", async () => {

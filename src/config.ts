@@ -1,12 +1,17 @@
 import {
   HIGHEST_PORT,
+  oneOf,
   readConfigFile,
   type FileSettings,
   type QueueRunDefaults,
 } from "./config-file.js";
 import type { NotificationSettings } from "./notifications/settings.js";
 import type { SafetyStops } from "./queue/safety.js";
-import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
+import {
+  PERMISSION_MODES,
+  RUNNER_DRIVERS,
+  type ClaudeCodeRunnerOptions,
+} from "./runner/claude-code.js";
 import type { ReviewSettings } from "./verification/review.js";
 
 // Where the defaults come from is the file's business; what they are is every
@@ -47,6 +52,12 @@ const DEFAULTS = {
   attemptBudget: 2,
   /** Nothing may stop to ask: the whole point is that nobody is there to answer. */
   permissionMode: "bypassPermissions",
+  /**
+   * The Agent SDK: it is the path the Supervisor is built around, and it needs
+   * nothing of the deployment but the executable it brings. The CLI beside it is
+   * for the deployment where that turns out not to be true.
+   */
+  driver: "sdk",
   /** On, so that pointing an instance at a webhook is all it takes to be told. */
   notificationsEnabled: true,
   /**
@@ -89,9 +100,13 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
       // Left unset, the Claude Code CLI picks its own model.
       ...(model === undefined ? {} : { model }),
       permissionMode:
-        envPermissionMode(env.SUPERVISOR_PERMISSION_MODE) ??
+        oneOf("SUPERVISOR_PERMISSION_MODE", set(env.SUPERVISOR_PERMISSION_MODE), PERMISSION_MODES) ??
         file.permissionMode ??
         DEFAULTS.permissionMode,
+      driver:
+        oneOf("SUPERVISOR_RUNNER_DRIVER", set(env.SUPERVISOR_RUNNER_DRIVER), RUNNER_DRIVERS) ??
+        file.driver ??
+        DEFAULTS.driver,
     },
     notifications: {
       enabled: file.notifications?.enabled ?? DEFAULTS.notificationsEnabled,
@@ -142,19 +157,4 @@ function envPort(value: string | undefined): number | undefined {
     );
   }
   return port;
-}
-
-function envPermissionMode(
-  value: string | undefined,
-): ClaudeCodeRunnerOptions["permissionMode"] | undefined {
-  const written = set(value);
-  if (written === undefined) return undefined;
-
-  const mode = PERMISSION_MODES.find((candidate) => candidate === written);
-  if (mode === undefined) {
-    throw new Error(
-      `SUPERVISOR_PERMISSION_MODE must be one of ${PERMISSION_MODES.join(", ")}, got "${written}"`,
-    );
-  }
-  return mode;
 }

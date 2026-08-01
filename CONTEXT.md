@@ -37,7 +37,11 @@ A single headless Claude Code invocation that executes exactly one ticket, start
 _Avoid_: session, job
 
 **Runner**:
-What carries out a Run — the one place the Supervisor launches Claude Code from. Tests substitute a fake, so a test suite never launches a Run of its own.
+What carries out a Run — the one place the Supervisor launches Claude Code from. There are two ways it launches one, and which of them an instance uses is its Driver. Tests substitute a fake, so a test suite never launches a Run of its own.
+
+**Driver**:
+Which of the two ways an instance drives its Runs: the Agent SDK, or the Claude Code CLI beside it, for a deployment the SDK cannot run in. It is the same Claude Code either way and the same messages come back either way, so it is the only thing that differs between them — the same Runs, the same three outcomes, the same reset time on a limit, the same figures for what a Run spent, the same output read while an Attempt is still in flight. A deployment's answer to what its environment can run, and nobody above the Runner is told which it answered.
+_Avoid_: mode (that is the permission mode), backend, transport
 
 **Attempt**:
 One Run of a ticket. A ticket gets a bounded number of attempts — its **attempt budget**, two by default — and each attempt after the first receives the previous attempt's failure feedback. A budget belongs to a ticket, not to a run: spending one ticket's whole budget costs the next ticket nothing.

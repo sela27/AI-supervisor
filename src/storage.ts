@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
+import { parsedJson } from "./json.js";
 import { spendOf, spentAltogether, type Spend } from "./runner/spend.js";
 import type { AttemptReview, ReviewVerdict } from "./verification/review.js";
 
@@ -237,20 +238,11 @@ export function openStorage(file: string): Storage {
       const row = db
         .prepare("SELECT record FROM runs ORDER BY updated_at DESC, id DESC LIMIT 1")
         .get() as { record: string } | undefined;
-      return row === undefined ? undefined : parsed(row.record);
+      return row === undefined ? undefined : parsedJson(row.record);
     },
 
     close: () => db.close(),
   };
-}
-
-/** A record that will not even parse is one there is nothing to be read out of. */
-function parsed(record: string): unknown {
-  try {
-    return JSON.parse(record);
-  } catch {
-    return undefined;
-  }
 }
 
 /**

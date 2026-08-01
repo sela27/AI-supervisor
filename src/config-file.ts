@@ -7,7 +7,12 @@ import { asRecord } from "./json.js";
 import type { NotificationSettings } from "./notifications/settings.js";
 import { isWebhookUrl } from "./notifications/webhook.js";
 import type { SafetyStops } from "./queue/safety.js";
-import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
+import {
+  PERMISSION_MODES,
+  RUNNER_DRIVERS,
+  type ClaudeCodeRunnerOptions,
+  type RunnerDriver,
+} from "./runner/claude-code.js";
 import { isRepositoryName, type SourceSelection } from "./tickets/source.js";
 import type { ReviewSettings } from "./verification/review.js";
 import { isVerification } from "./verification/verifier.js";
@@ -36,6 +41,8 @@ export interface FileSettings {
   logLevel?: string;
   model?: string;
   permissionMode?: ClaudeCodeRunnerOptions["permissionMode"];
+  /** Which way this instance drives Claude Code, where the file settles it. */
+  driver?: RunnerDriver;
   attemptBudget?: number;
   /** Whatever the file said about being told things; the rest is defaulted after. */
   notifications?: Partial<NotificationSettings>;
@@ -59,7 +66,7 @@ const FILE_SETTINGS = [
   "safety",
   "project",
 ];
-const RUNNER_SETTINGS = ["model", "permissionMode"];
+const RUNNER_SETTINGS = ["model", "permissionMode", "driver"];
 const SOURCE_SETTINGS = ["type", "directory", "repository"];
 const NOTIFICATION_SETTINGS = ["enabled", "webhook", "on"];
 const REVIEW_SETTINGS = ["enabled"];
@@ -117,7 +124,12 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const logLevel = text(path, settings.logLevel, "logLevel");
   const attemptBudget = budget(path, settings.attemptBudget);
   const model = text(path, runner.model, "runner.model");
-  const permissionMode = mode(path, runner.permissionMode);
+  const permissionMode = oneOf(
+    setting(path, "runner.permissionMode"),
+    runner.permissionMode,
+    PERMISSION_MODES,
+  );
+  const driver = oneOf(setting(path, "runner.driver"), runner.driver, RUNNER_DRIVERS);
   const ticketSource = sourceSelection(path, source);
   const told = notificationSettings(path, notifications);
   const reviewsAttempts = flag(path, reviewing.enabled, "review.enabled");
@@ -133,6 +145,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(logLevel === undefined ? {} : { logLevel }),
     ...(model === undefined ? {} : { model }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(driver === undefined ? {} : { driver }),
     ...(attemptBudget === undefined ? {} : { attemptBudget }),
     ...(told === undefined ? {} : { notifications: told }),
     ...(reviewsAttempts === undefined ? {} : { review: { enabled: reviewsAttempts } }),
@@ -408,15 +421,25 @@ function wholePort(path: string, value: unknown): number | undefined {
   return value as number;
 }
 
-function mode(path: string, value: unknown): ClaudeCodeRunnerOptions["permissionMode"] | undefined {
+/**
+ * A setting that may only be one of a few words. A word nobody recognises is
+ * nearly always one of them misspelled, and it is worth stopping for: the words
+ * are what the setting is, so a wrong one has no sensible thing to fall back to.
+ *
+ * `where` is whatever names the setting to somebody reading the failure — a line
+ * of the file, or the environment variable that carried it — since the same
+ * settings arrive both ways and are the same words either way.
+ */
+export function oneOf<T extends string>(
+  where: string,
+  value: unknown,
+  allowed: readonly T[],
+): T | undefined {
   if (value === undefined) return undefined;
 
-  const found = PERMISSION_MODES.find((candidate) => candidate === value);
+  const found = allowed.find((candidate) => candidate === value);
   if (found === undefined) {
-    throw new Error(
-      `${setting(path, "runner.permissionMode")} must be one of ${PERMISSION_MODES.join(", ")}, ` +
-        `got ${quote(value)}`,
-    );
+    throw new Error(`${where} must be one of ${allowed.join(", ")}, got ${quote(value)}`);
   }
   return found;
 }

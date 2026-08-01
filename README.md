@@ -45,7 +45,8 @@ below.
   "attemptBudget": 2,
   "runner": {
     "model": "claude-opus-5",
-    "permissionMode": "bypassPermissions"
+    "permissionMode": "bypassPermissions",
+    "driver": "sdk"
   },
   "source": {
     "type": "local",
@@ -114,6 +115,7 @@ image it was built from:
 | `SUPERVISOR_LOG_LEVEL`       | `logLevel`           | `info`              | Fastify/pino log level                    |
 | `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
 | `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
+| `SUPERVISOR_RUNNER_DRIVER`   | `runner.driver`      | `sdk`               | Which way Claude Code is driven           |
 
 The ticket source, the project, the attempt budget, the notification settings, the review and
 the safety stops have no environment variables: they are what an instance _is_, and the file
@@ -613,11 +615,12 @@ run left to hold up and nothing else left to say it.
 
 ## How a ticket is run
 
-Each ticket is one fresh headless Claude Code Run, launched through the Claude Agent SDK in
-the project directory. Nothing carries over between tickets — a fresh context per Run is the
-design, not an accident. The Run is given the ticket's title and acceptance criteria and told
-three things: commit the work, do not push, and leave the ticket's own file alone (the
-Supervisor writes the outcome back itself).
+Each ticket is one fresh headless Claude Code Run, launched in the project directory through
+the Claude Agent SDK — or through the CLI beside it, if the instance was told to. Nothing
+carries over between tickets: a fresh context per Run is the design, not an accident. The Run
+is given the ticket's title and acceptance criteria and told three things: commit the work,
+do not push, and leave the ticket's own file alone (the Supervisor writes the outcome back
+itself).
 
 Runs need Claude Code's own credentials to be present wherever the Supervisor is running.
 Because it runs unattended, permissions default to `bypassPermissions` — a Run that stops to
@@ -633,6 +636,34 @@ curl localhost:4317/api/queue/tickets/01-boot-the-app/output
 
 That answers the ticket being attempted right now; any other ticket answers nothing, and the
 finished Attempt's whole log is filed under `/attempts` below.
+
+## The other way in
+
+There are two ways the Supervisor launches Claude Code, and an instance uses one of them:
+
+```json
+{
+  "runner": {
+    "driver": "cli"
+  }
+}
+```
+
+`sdk`, the default, is the Claude Agent SDK. `cli` is the Claude Code CLI beside it, run as
+`claude --print --output-format stream-json` — the same Claude Code, asked for the same
+answers down a different pipe. It is there for the deployment the SDK cannot run in, where
+otherwise no ticket could be attempted at all. `SUPERVISOR_RUNNER_DRIVER` sets it too, so a
+container can fall back without its image being rebuilt around it.
+
+**Nothing else about the Supervisor changes.** The same three outcomes, the same reset time
+read off a usage limit, the same `model` and `permissionMode`, the same figures for what a
+Run spent, and the same output readable line by line while an Attempt is still in flight. A
+run started one way and a run started the other are indistinguishable from the API.
+
+Driven this way, the CLI has to be on the `PATH` as `claude` — it is, in the container. One
+that is missing fails the Attempt it was wanted for, with `spawn claude ENOENT` in the
+reason, rather than bringing the run down; so does one that exits without reporting a
+result, and there the reason carries the exit code and whatever the CLI complained about.
 
 ## Having the work read before it stands
 
