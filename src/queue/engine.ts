@@ -1,6 +1,6 @@
 import type { Clock } from "../clock.js";
 import { messageOf } from "../errors.js";
-import type { EventSink, SupervisorEvent } from "../events.js";
+import type { EventSink, NightsAccount, SupervisorEvent } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { ReviewOutcome, Runner, SettledRun } from "../runner/runner.js";
 import { spentAltogether, type Spend } from "../runner/spend.js";
@@ -807,10 +807,7 @@ async function walkTheQueue(context: RunContext): Promise<SupervisorEvent | unde
       // Read at the ticket boundary like everything else that ends a run: the
       // Attempt under way is never cut off half-way, whatever it has run into.
       const reached = safetyStopReached(context.safety, soFar(context, startedAt));
-      if (reached !== undefined) {
-        stopForSafety(context, reached);
-        return undefined;
-      }
+      if (reached !== undefined) return stopForSafety(context, reached);
 
       try {
         await attemptTicket(next, context);
@@ -825,7 +822,7 @@ async function walkTheQueue(context: RunContext): Promise<SupervisorEvent | unde
     }
 
     context.run.state = "completed";
-    return theNightsOutcome(context);
+    return { type: "queue-finished", runId: context.run.id, ...accountOfTheNight(context) };
   } catch (error) {
     // The repository moving under the run, the source going away: this queue did
     // not complete, and nothing it could do by itself would change that.
@@ -991,16 +988,15 @@ function limitSpell(record: RunRecord): LimitSpell | undefined {
 
 /**
  * How each ticket ended and where the work is — the whole of what somebody wants
- * before opening anything. Tickets the Ticket Source already reported done are
- * nobody's news: this run did not do them.
+ * before opening anything, whichever of the two endings is giving the account.
+ * Tickets the Ticket Source already reported done are nobody's news: this run did
+ * not do them. Nor are the ones a stop never reached, which are nothing yet.
  */
-function theNightsOutcome(context: RunContext): SupervisorEvent {
+function accountOfTheNight(context: RunContext): NightsAccount {
   const counted = (state: TicketRunState): number =>
     context.queued.filter(({ entry }) => entry.state === state).length;
 
   return {
-    type: "queue-finished",
-    runId: context.run.id,
     branch: context.run.branch,
     succeeded: counted("succeeded"),
     failed: counted("failed"),
@@ -1101,10 +1097,21 @@ function soFar(context: RunContext, startedAt: Date): RunSoFar {
  * than completed: nothing broke, and the queue was not run out. Everything the
  * run finished stands on its branch, and nothing picks the rest up by itself —
  * a stop the user set in advance is still the user's own stop.
+ *
+ * Told about all the same, and with the night's whole account, since no finished
+ * queue is coming to give one. A stop given by hand says nothing, which is the
+ * same idea from the other side: that person was there.
  */
-function stopForSafety(context: RunContext, reached: string): void {
+function stopForSafety(context: RunContext, reached: string): SupervisorEvent {
   context.run.stoppedBy = reached;
   context.run.state = "stopped";
+
+  return {
+    type: "safety-stop-reached",
+    runId: context.run.id,
+    stoppedBy: reached,
+    ...accountOfTheNight(context),
+  };
 }
 
 /**

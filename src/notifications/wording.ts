@@ -1,4 +1,4 @@
-import type { SupervisorEvent } from "../events.js";
+import type { NightsAccount, SupervisorEvent } from "../events.js";
 import type { Notification } from "./notifier.js";
 
 /**
@@ -21,13 +21,23 @@ export function notificationFor(event: SupervisorEvent): Notification {
 function worded(event: SupervisorEvent): Omit<Notification, "type"> {
   switch (event.type) {
     case "queue-finished": {
-      const counts =
-        `${event.succeeded} succeeded, ${event.failed} failed, ` + `${event.skipped} skipped`;
+      const counts = howEachTicketEnded(event);
       return {
         title: `Queue finished: ${counts}`,
         body: `${counts}.\nThe night's work is on ${event.branch}.`,
       };
     }
+
+    case "safety-stop-reached":
+      return {
+        // The stop itself is the headline: it is the whole of why the night is
+        // over early, and it reads as a sentence on a lock screen already.
+        title: `Run stopped: ${event.stoppedBy}`,
+        body:
+          `${event.stoppedBy}, so the run ended there.\n\n${howEachTicketEnded(event)}.\n` +
+          `The night's work is on ${event.branch}.\n` +
+          `Everything it never reached is still waiting, and nothing picks it up by itself.`,
+      };
 
     case "ticket-failed":
       return {
@@ -62,6 +72,15 @@ function worded(event: SupervisorEvent): Omit<Notification, "type"> {
           `Whatever was under way stopped where it stood, on the run's own branch.`,
       };
   }
+}
+
+/**
+ * The three numbers, in the one form both endings say them. A night that ran out
+ * of queue and a night a stop ended read alike here on purpose: it is the same
+ * night either way, and the morning is looking for the same thing.
+ */
+function howEachTicketEnded(night: NightsAccount): string {
+  return `${night.succeeded} succeeded, ${night.failed} failed, ${night.skipped} skipped`;
 }
 
 /** Enough of a failure to know what it was, and no more than a phone will take. */

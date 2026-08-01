@@ -25,6 +25,20 @@ export interface TicketFileOptions {
   criteria?: string[];
 }
 
+/**
+ * A queue of tickets that wait on nothing and on each other least of all, so what
+ * a run does with them is decided by whatever the test is about rather than by the
+ * queue's own shape.
+ */
+export function independentTickets(count: number): Record<string, string> {
+  const files: Record<string, string> = {};
+  for (let number = 1; number <= count; number += 1) {
+    const id = String(number).padStart(2, "0");
+    files[`${id}-ticket.md`] = ticketFile({ title: `${id} — Ticket ${number}` });
+  }
+  return files;
+}
+
 /** A well-formed ticket file in the shape `/to-tickets` writes. */
 export function ticketFile(options: TicketFileOptions): string {
   const criteria = options.criteria ?? ["It works"];

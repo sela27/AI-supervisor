@@ -483,10 +483,12 @@ never mentioned, and the failure stop is on to begin with.
 
 A run that reaches one is **stopped**, at a ticket boundary like every other ending: the
 Attempt under way is never cut off half-way, everything the run finished stands on its
-branch, and the reason appears in the queue's `stoppedBy` field and on the dashboard. Nothing
-picks it up again — a stop set in advance is still your own stop, so resuming or retrying it
-answers `409` exactly as it does for a run you stopped by hand. What it never reached is left
-`pending` and unblamed, for a run tomorrow to have.
+branch, and the reason appears in the queue's `stoppedBy` field and on the dashboard. It also
+[reaches you](#being-told-when-something-matters), since a stopped run's queue never finishes
+and nothing else is coming to say how the night went. Nothing picks it up again — a stop set
+in advance is still your own stop, so resuming or retrying it answers `409` exactly as it
+does for a run you stopped by hand. What it never reached is left `pending` and unblamed, for
+a run tomorrow to have.
 
 The failure count starts again at every ticket that works: three refusals in a row is a
 project that is broken rather than a ticket that is, and one ticket succeeding is the whole
@@ -565,16 +567,21 @@ Like the rest of the project, a start request can name `pushCheckpoints` for one
 
 ## Being told when something matters
 
-The dashboard is for when you are looking. Five moments are worth reaching you when you are
+The dashboard is for when you are looking. Six moments are worth reaching you when you are
 not, and each posts to one webhook:
 
-| Event                | When                                                     | What it says                                                 |
-| -------------------- | -------------------------------------------------------- | ------------------------------------------------------------ |
-| `queue-finished`     | The queue ran out of tickets to run                        | How many succeeded, failed and were skipped, and the branch    |
-| `ticket-failed`      | A ticket's every Attempt was refused                       | Which ticket, and what refused the last go                     |
-| `long-wait`          | A usage limit has held the run up for over two hours       | Which ticket is waiting, and when the run means to try again   |
-| `run-broke-down`     | The run stopped for something no ticket was to blame for   | What it could not get past                                     |
-| `supervisor-crashed` | The service itself is going down, run or no run            | What it went down on                                           |
+| Event                 | When                                                     | What it says                                                 |
+| --------------------- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| `queue-finished`      | The queue ran out of tickets to run                        | How many succeeded, failed and were skipped, and the branch    |
+| `safety-stop-reached` | A Safety stop ended the night before the queue ran out     | Which stop it was, and the same account a finished queue gives |
+| `ticket-failed`       | A ticket's every Attempt was refused                       | Which ticket, and what refused the last go                     |
+| `long-wait`           | A usage limit has held the run up for over two hours       | Which ticket is waiting, and when the run means to try again   |
+| `run-broke-down`      | The run stopped for something no ticket was to blame for   | What it could not get past                                     |
+| `supervisor-crashed`  | The service itself is going down, run or no run            | What it went down on                                           |
+
+A stopped run's queue never finishes, so `safety-stop-reached` gives that account itself:
+without it a night that halted at two in the morning would say nothing at all. Stopping a run
+yourself, from the dashboard or the API, says nothing either way — you were there.
 
 The last two are different failures. A run that broke down leaves the Supervisor standing —
 the API answers, the dashboard is up, and `GET /api/queue` reports `failed` with the reason.

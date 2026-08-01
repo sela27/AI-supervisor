@@ -1,4 +1,17 @@
 /**
+ * How the night went and where it went. A run ends once and gets exactly one of
+ * the two Events that are a last word, so both of them carry this: the account a
+ * finished queue gives has to be given wherever the run actually ended.
+ */
+export interface NightsAccount {
+  /** Where the night's work is, which is the whole of what the morning needs. */
+  branch: string;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
  * Something the Supervisor wants somebody told about — not the run's state, which
  * the API and the Dashboard already carry, but a moment worth reaching a person
  * who is not looking at either.
@@ -20,15 +33,19 @@ export type SupervisorEvent =
       /** What refused the last Attempt the ticket had left. */
       failure: string;
     }
-  | {
-      type: "queue-finished";
+  /** The queue run out: the ending the other four are all instead of. */
+  | ({ type: "queue-finished"; runId: string } & NightsAccount)
+  /**
+   * A Safety stop ending the run — the one ending the user cannot see coming. A
+   * stop they gave by hand raises nothing: that person is holding the phone they
+   * would be told on.
+   */
+  | ({
+      type: "safety-stop-reached";
       runId: string;
-      /** Where the night's work is, which is the whole of what the morning needs. */
-      branch: string;
-      succeeded: number;
-      failed: number;
-      skipped: number;
-    }
+      /** Which stop it was, in the words the run reports it stopped by. */
+      stoppedBy: string;
+    } & NightsAccount)
   | {
       type: "run-broke-down";
       runId: string;
@@ -51,6 +68,7 @@ export type SupervisorEventType = SupervisorEvent["type"];
  */
 const EVERY_TYPE: Record<SupervisorEventType, true> = {
   "queue-finished": true,
+  "safety-stop-reached": true,
   "ticket-failed": true,
   "long-wait": true,
   "run-broke-down": true,

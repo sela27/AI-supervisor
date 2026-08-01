@@ -17,7 +17,7 @@ import {
 import { commitsWork, fakeRunner, leavesBrokenWork, limitedFor } from "./helpers/runner.js";
 import { startTestSupervisor, type TestSupervisor } from "./helpers/supervisor.js";
 import { removeTempDirectories } from "./helpers/temp-dir.js";
-import { ticketFile } from "./helpers/ticket-files.js";
+import { independentTickets } from "./helpers/ticket-files.js";
 
 /**
  * The Safety stops, and the hour a run can be armed for. Both are about a night
@@ -38,19 +38,6 @@ const NOW = new Date("2026-07-30T21:00:00.000Z");
 
 function at(fromNow: number): string {
   return new Date(NOW.getTime() + fromNow).toISOString();
-}
-
-/**
- * A queue of tickets that wait on nothing and on each other least of all, so
- * what a run does with them is decided by the stops rather than by the queue.
- */
-function independentTickets(count: number): Record<string, string> {
-  const files: Record<string, string> = {};
-  for (let number = 1; number <= count; number += 1) {
-    const id = String(number).padStart(2, "0");
-    files[`${id}-ticket.md`] = ticketFile({ title: `${id} — Ticket ${number}` });
-  }
-  return files;
 }
 
 /** The queue once the run has ended, however it ended. */
