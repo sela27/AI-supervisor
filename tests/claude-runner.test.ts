@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import { claudeCodeRunner } from "../src/runner/claude-code.js";
-import type { RunRequest } from "../src/runner/runner.js";
+import type { ReviewRequest, RunRequest } from "../src/runner/runner.js";
 import type { Ticket } from "../src/tickets/ticket.js";
 import {
   assistantSaying,
@@ -9,6 +9,7 @@ import {
   failingRun,
   quotaSaid,
   recordedRun,
+  reviewSaid,
   runErrored,
   runSucceeded,
 } from "./helpers/recorded-run.js";
@@ -35,6 +36,12 @@ const PROJECT = "/projects/under-supervision";
 
 function request(overrides: Partial<RunRequest> = {}): RunRequest {
   return { ticket: TICKET, projectDirectory: PROJECT, ...overrides };
+}
+
+const DIFF = ["diff --git a/src/main.ts b/src/main.ts", "+app.listen(4317);"].join("\n");
+
+function toReview(overrides: Partial<ReviewRequest> = {}): ReviewRequest {
+  return { ticket: TICKET, projectDirectory: PROJECT, diff: DIFF, ...overrides };
 }
 
 /** A Run that did the work and said so — three lines of transcript. */
@@ -251,4 +258,113 @@ test("output is handed over as it arrives, so a Run can be watched live", async 
   expect(seen).toEqual(["Reading the ticket.", "· Edit: src/main.ts", "Committed."]);
   // The same output, whole, for whoever was not watching.
   expect(outcome.output).toBe(WORKING_TRANSCRIPT);
+});
+
+test("a review that reached a verdict is handed back as one, reasoning and all", async () => {
+  const recorded = recordedRun(
+    assistantSaying("Reading the diff."),
+    reviewSaid("rejected", "Nothing about the health endpoint is tested."),
+  );
+
+  const outcome = await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  expect(outcome).toEqual({
+    status: "reviewed",
+    verdict: "rejected",
+    reasoning: "Nothing about the health endpoint is tested.",
+    output: "Reading the diff.",
+  });
+});
+
+test("the reviewer is shown the ticket, its criteria and the whole of the work", async () => {
+  const recorded = recordedRun(reviewSaid("approved", "It meets the ticket."));
+
+  await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  const prompt = recorded.prompts[0] ?? "";
+  expect(prompt).toContain("Boot the app");
+  expect(prompt).toContain("It answers /api/health");
+  expect(prompt).toContain(DIFF);
+  // It is judging the work, not carrying on with it.
+  expect(prompt).toContain("change nothing");
+  expect(recorded.options[0]?.cwd).toBe(PROJECT);
+});
+
+test("a reviewer is given nothing it could write to the project with", async () => {
+  const recorded = recordedRun(reviewSaid("approved", "It meets the ticket."));
+
+  await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  // An approval is followed by a Checkpoint that commits whatever is lying about,
+  // so a reviewer able to leave something behind would have it committed as if
+  // the Run had written it.
+  expect(recorded.options[0]?.tools).toEqual(["Read", "Grep", "Glob"]);
+  // And the verdict is asked for as an answer rather than picked out of prose.
+  expect(recorded.options[0]?.outputFormat).toMatchObject({ type: "json_schema" });
+});
+
+test("a diff too long to send is cut short, and the reviewer told to read the rest itself", async () => {
+  const recorded = recordedRun(reviewSaid("approved", "It meets the ticket."));
+  const enormous = `${DIFF}\n${"+a line of a generated file\n".repeat(20_000)}`;
+
+  await claudeCodeRunner({ launch: recorded.launch }).review(toReview({ diff: enormous }));
+
+  const prompt = recorded.prompts[0] ?? "";
+  expect(prompt.length).toBeLessThan(enormous.length);
+  expect(prompt).toContain(DIFF);
+  expect(prompt).toContain("read the files themselves");
+});
+
+test("a usage limit during a review is a limit, not a verdict on the work", async () => {
+  const resetAt = new Date(Date.now() + 90 * 60 * 1000);
+  const recorded = recordedRun(
+    quotaSaid("rejected", resetAt.getTime()),
+    runErrored("error_during_execution", { terminal_reason: "blocking_limit" }),
+  );
+
+  const outcome = await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  // Never a rejection: the quota said nothing about the work, and reading it as a
+  // refusal would fail a ticket for something the next Attempt cannot fix.
+  expect(outcome).toEqual({ status: "limit-hit", resetAt, output: "" });
+});
+
+test("a review that reached no verdict refuses the attempt rather than waving it through", async () => {
+  const broke = failingRun(new Error("spawn claude ENOENT"));
+  expect(await claudeCodeRunner({ launch: broke.launch }).review(toReview())).toMatchObject({
+    status: "reviewed",
+    verdict: "rejected",
+    reasoning: expect.stringContaining("spawn claude ENOENT") as unknown,
+  });
+
+  // A Run that ended without the answer it was asked for has judged nothing, and
+  // an Attempt nobody managed to read is not one to let through unread.
+  const silent = recordedRun(runSucceeded("I had a look."));
+  expect(await claudeCodeRunner({ launch: silent.launch }).review(toReview())).toMatchObject({
+    status: "reviewed",
+    verdict: "rejected",
+    reasoning: expect.stringContaining("no verdict") as unknown,
+  });
+
+  const nothing = recordedRun(assistantSaying("Halfway through."));
+  expect(await claudeCodeRunner({ launch: nothing.launch }).review(toReview())).toMatchObject({
+    status: "reviewed",
+    verdict: "rejected",
+    reasoning: expect.stringContaining("without reporting a result") as unknown,
+  });
+});
+
+test("a review is watched as it happens, like the Run it is judging", async () => {
+  const seen: string[] = [];
+  const recorded = recordedRun(
+    assistantSaying("Reading the diff."),
+    assistantUsing("Read", { file_path: "src/main.ts" }),
+    reviewSaid("approved", "It meets the ticket."),
+  );
+
+  await claudeCodeRunner({ launch: recorded.launch }).review(
+    toReview({ onOutput: (chunk) => seen.push(chunk) }),
+  );
+
+  expect(seen).toEqual(["Reading the diff.", "· Read: src/main.ts"]);
 });

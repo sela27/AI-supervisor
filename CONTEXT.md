@@ -49,6 +49,10 @@ _Avoid_: UI, front-end, web app
 **Verification**:
 The Supervisor's own judgment of whether an Attempt succeeded — project-configured commands (tests, typecheck, build) run after the Attempt, independent of what Claude reported. An optional review agent can be enabled on top.
 
+**Review**:
+Verification's optional second stage: a Run of its own that reads what an Attempt left behind and judges it against the ticket's acceptance criteria, answering one of two verdicts. Off unless the instance asks for it, and never reached for an Attempt the project's own commands already refused — work that does not build is not work a reviewer has anything to say about. A rejection refuses the Attempt exactly as a failing check does, and its reasoning is both what the ticket fails with and what the next Attempt is told; an approval lets the ticket succeed as usual. A review that could not reach a verdict is not an approval: nothing reaches a Checkpoint unread.
+_Avoid_: check (that is a verification command), gate, second opinion
+
 **Checkpoint**:
 The commit that ends a successful ticket. A failed ticket's changes are discarded back to the last Checkpoint.
 

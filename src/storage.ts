@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 
+import type { AttemptReview, ReviewVerdict } from "./verification/review.js";
+
 /**
  * How an Attempt ended. `limit-hit` is neither of the others: the usage limit cut
  * the Run short, so the ticket was never settled either way.
@@ -14,6 +16,12 @@ export interface AttemptRecord {
   /** Why the Supervisor refused it, when it did. */
   failure: string | null;
   output: string;
+  /**
+   * What the review made of it, for an instance that asked for one. Nothing at
+   * all where no reviewer ever saw the Attempt — an approval that was never
+   * given and a review that was never asked for must not read alike.
+   */
+  review: AttemptReview | null;
 }
 
 export interface StoredAttempt extends AttemptRecord {
@@ -92,6 +100,17 @@ const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    // Verification's optional second stage, kept beside the Attempt it judged.
+    // Null in both columns for every Attempt no reviewer ever saw, which is
+    // every Attempt written before this and every one an instance that never
+    // asked for reviews will write after it.
+    version: 3,
+    up: `
+      ALTER TABLE attempts ADD COLUMN review_verdict TEXT;
+      ALTER TABLE attempts ADD COLUMN review_reasoning TEXT;
+    `,
+  },
 ];
 
 interface AttemptRow {
@@ -100,6 +119,8 @@ interface AttemptRow {
   failure: string | null;
   output: string;
   recorded_at: string;
+  review_verdict: string | null;
+  review_reasoning: string | null;
 }
 
 export function openStorage(file: string): Storage {
@@ -118,8 +139,10 @@ export function openStorage(file: string): Storage {
 
     recordAttempt: (attempt) => {
       db.prepare(
-        `INSERT INTO attempts (run_id, ticket_id, outcome, failure, output, recorded_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attempts
+           (run_id, ticket_id, outcome, failure, output, recorded_at,
+            review_verdict, review_reasoning)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         attempt.runId,
         attempt.ticketId,
@@ -127,13 +150,16 @@ export function openStorage(file: string): Storage {
         attempt.failure,
         attempt.output,
         new Date().toISOString(),
+        attempt.review?.verdict ?? null,
+        attempt.review?.reasoning ?? null,
       );
     },
 
     attemptsFor: (runId, ticketId) => {
       const rows = db
         .prepare(
-          `SELECT ticket_id, outcome, failure, output, recorded_at
+          `SELECT ticket_id, outcome, failure, output, recorded_at,
+                  review_verdict, review_reasoning
            FROM attempts WHERE run_id = ? AND ticket_id = ? ORDER BY id`,
         )
         .all(runId, ticketId) as unknown as AttemptRow[];
@@ -145,6 +171,7 @@ export function openStorage(file: string): Storage {
         failure: row.failure,
         output: row.output,
         recordedAt: row.recorded_at,
+        review: reviewOf(row),
       }));
     },
 
@@ -173,6 +200,18 @@ function parsed(record: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * What the review said about the Attempt, or nothing where no reviewer saw it.
+ * A verdict this build does not recognise is one it cannot read as an approval,
+ * so it is read as the refusal it might have been.
+ */
+function reviewOf(row: AttemptRow): AttemptReview | null {
+  if (row.review_verdict === null) return null;
+
+  const verdict: ReviewVerdict = row.review_verdict === "approved" ? "approved" : "rejected";
+  return { verdict, reasoning: row.review_reasoning ?? "" };
 }
 
 /** Anything the column holds that this build does not recognise did not succeed. */

@@ -56,6 +56,9 @@ below.
     "webhook": "https://ntfy.sh/pick-your-own-topic",
     "on": {}
   },
+  "review": {
+    "enabled": false
+  },
   "safety": {
     "maxTickets": null,
     "maxRuntimeMinutes": null,
@@ -112,9 +115,9 @@ image it was built from:
 | `SUPERVISOR_MODEL`           | `runner.model`       | the CLI's own       | Model each Run uses                       |
 | `SUPERVISOR_PERMISSION_MODE` | `runner.permissionMode` | `bypassPermissions` | How much a Run may do without being asked |
 
-The ticket source, the project, the attempt budget, the notification settings and the safety
-stops have no environment variables: they are what an instance _is_, and the file is where
-they belong.
+The ticket source, the project, the attempt budget, the notification settings, the review and
+the safety stops have no environment variables: they are what an instance _is_, and the file
+is where they belong.
 
 ## In a container
 
@@ -590,6 +593,53 @@ curl localhost:4317/api/queue/tickets/01-boot-the-app/output
 That answers the ticket being attempted right now; any other ticket answers nothing, and the
 finished Attempt's whole log is filed under `/attempts` below.
 
+## Having the work read before it stands
+
+Verification is the project's own commands, and it can have a second stage. Off unless an
+instance asks for it:
+
+```json
+{ "review": { "enabled": true } }
+```
+
+With it on, an Attempt that has passed every `verify` command is put in front of a reviewer
+before it becomes a Checkpoint: a short Run of its own, given the ticket, its acceptance
+criteria and everything the Attempt changed as a diff. It answers one of two verdicts.
+
+"Everything" means exactly what the Checkpoint would commit — the Attempt's commits, its
+uncommitted edits, and the files it created and never added. A reviewer that approved a
+Checkpoint holding work it had not been shown would be the one thing this stage must not do.
+Only a diff too large to send is cut short, and there the reviewer is told to read the files
+itself.
+
+An approval and the ticket succeeds exactly as it would have. A rejection refuses the Attempt
+the way a failing test does — the work goes back to the last Checkpoint, and the reviewer's
+own words are what the next Attempt is told it was refused for. A ticket whose every Attempt
+a reviewer turned down fails with those words, written back to the Ticket Source like any
+other failure. Either way the verdict and the reasoning are kept with the Attempt they
+judged, and shown against it on the dashboard.
+
+Nothing the project's own commands already refused is ever shown to a reviewer: work that
+does not build is not work a review has anything to say about, and asking would spend quota
+to be told what is already known.
+
+The reviewer is handed the work rather than pointed at it, and given `Read`, `Grep` and
+`Glob` and nothing else. It cannot write, because an approval is followed by a Checkpoint
+that commits whatever is lying about — a reviewer able to leave something behind would have
+it committed as if the Run had written it.
+
+A review that reaches no verdict — it broke down, or it ended without answering — refuses the
+Attempt rather than waving it through: the whole point of the stage is that nothing reaches a
+Checkpoint unread. So a review that is misconfigured fails tickets rather than quietly doing
+nothing, and the [consecutive-failure stop](#how-far-a-run-may-go-on-its-own) is what ends
+the night rather than spending all of it that way.
+
+A usage limit during a review is a usage limit like any other: the Attempt is discarded, the
+ticket is left exactly as it was found, and it costs the ticket none of its budget.
+
+The price is a Run per verified Attempt, against the same subscription the queue runs on. On
+a night with a tight quota, that is a night that gets through fewer tickets.
+
 ## When a usage limit is hit
 
 A usage limit is not a ticket failure and is never recorded as one. The interrupted Attempt
@@ -672,7 +722,9 @@ from the restart, so a night cannot win itself a fresh allowance by being restar
 A refused Attempt is thrown all the way back to the last Checkpoint the moment it is
 refused — its commits, its edits and the files it created all go, so no broken half-work
 reaches the next Run or the branch. Ignored files (`node_modules` and friends) are left
-alone.
+alone. It makes no difference what refused it: the Run reporting failure, a `verify` command,
+and a [review](#having-the-work-read-before-it-stands) turning the work down are the same
+refusal with different words on it.
 
 The ticket then gets another go. Each ticket has an attempt budget, two by default, and a
 retry is a fresh Run like any other — told, on top of the ticket, what refused the last
@@ -717,7 +769,9 @@ curl localhost:4317/api/queue/tickets/01-boot-the-app/attempts
 That answers every Attempt the current run made on the ticket, oldest first, each with its
 outcome (`succeeded`, `failed`, or `limit-hit`), its failure summary, and the full output —
 the Run's own transcript, plus whatever the verification command printed when it was a
-`verify` command that refused the Attempt.
+`verify` command that refused the Attempt. On an instance that [reviews the
+work](#having-the-work-read-before-it-stands), each Attempt a reviewer saw carries its
+verdict and reasoning too; `review` is null on every Attempt no reviewer ever saw.
 
 ## Checks
 

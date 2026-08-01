@@ -65,6 +65,21 @@ export function runSucceeded(result = "Done."): SDKMessage {
   return fragment({ type: "result", subtype: "success", is_error: false, result });
 }
 
+/**
+ * A review that reached a verdict, as the SDK hands a structured answer back.
+ * The reasoning is in the text as well, because that is where the CLI puts it —
+ * but the structured answer is the one the Supervisor reads.
+ */
+export function reviewSaid(verdict: "approved" | "rejected", reasoning: string): SDKMessage {
+  return fragment({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: reasoning,
+    structured_output: { verdict, reasoning },
+  });
+}
+
 export function runErrored(
   subtype: string,
   extras: { errors?: string[]; terminal_reason?: string; result?: string } = {},

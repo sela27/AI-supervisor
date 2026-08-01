@@ -32,6 +32,9 @@ test("an instance with no config file to read keeps every default", async () => 
     // Willing to say anything, with nowhere to say it: pointing an instance at a
     // webhook is the whole of what it takes to start being told.
     notifications: { enabled: true, on: {} },
+    // Verification is the project's own commands and nothing else: a second Run
+    // per Attempt is quota nobody asked to spend.
+    review: { enabled: false },
     // The queue is the queue and the night is the night; the one thing an
     // unconfigured instance will not sit through is a project that is broken.
     safety: { maxTickets: null, maxRuntimeMinutes: null, consecutiveFailures: 3 },
@@ -54,6 +57,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
       webhook: "https://ntfy.sh/my-topic",
       on: { "long-wait": false },
     },
+    review: { enabled: true },
     safety: { maxTickets: 8, maxRuntimeMinutes: 480, consecutiveFailures: 2 },
     project: {
       directory: "./app",
@@ -76,6 +80,7 @@ test("the file carries every setting, so a run needs nothing but a start", async
       webhook: "https://ntfy.sh/my-topic",
       on: { "long-wait": false },
     },
+    review: { enabled: true },
     safety: { maxTickets: 8, maxRuntimeMinutes: 480, consecutiveFailures: 2 },
     defaults: {
       source: { type: "local", directory: join(cwd, "tickets") },
@@ -225,6 +230,17 @@ test("silence has to be asked for with a switch, not with a word that looks like
 
   const perEvent = await instanceWith({ notifications: { on: { "long-wait": "no" } } });
   expect(() => loadSupervisorConfig({ cwd: perEvent, env: {} })).toThrow(/long-wait/);
+});
+
+test("a review has to be switched on with a switch, and only a switch it knows", async () => {
+  const written = await instanceWith({ review: { enabled: "yes" } });
+  expect(() => loadSupervisorConfig({ cwd: written, env: {} })).toThrow(/review.enabled/);
+
+  // Every other spelling of it is a review that would never have happened, and
+  // an instance that thought it was reviewing all night is worse than one that
+  // never started.
+  const typo = await instanceWith({ review: { enable: true } });
+  expect(() => loadSupervisorConfig({ cwd: typo, env: {} })).toThrow(/enable/);
 });
 
 test("verification that could never refuse an Attempt is refused itself", async () => {

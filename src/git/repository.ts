@@ -24,6 +24,19 @@ export interface GitRepository {
   currentBranch(): Promise<string>;
   /** True when the working tree holds anything not yet committed. */
   isDirty(): Promise<boolean>;
+  /**
+   * Everything that has changed since `commit` — what has been committed on top
+   * of it, what is still sitting in the working tree, and the files that were
+   * created and never added. A Checkpoint sweeps up all three, so all three have
+   * to be in anything that is shown a Checkpoint's worth of work.
+   *
+   * Reaching the third means marking those files as intended for the next commit,
+   * which is the only way git will diff a file it has never seen. Nothing is
+   * committed by it, and it is undone by the very next thing to happen either
+   * way: a Checkpoint adds them properly, and a reset drops the marking with the
+   * files themselves.
+   */
+  diffSince(commit: string): Promise<string>;
   /** Whether the name is taken — here or, as far as this clone knows, on the remote. */
   branchExists(name: string): Promise<boolean>;
   /** Creates the branch and switches to it, carrying the working tree along. */
@@ -64,6 +77,10 @@ export async function openRepository(directory: string): Promise<GitRepository> 
     headCommit,
     currentBranch: () => git("rev-parse", "--abbrev-ref", "HEAD"),
     isDirty,
+    diffSince: async (commit) => {
+      await git("add", "--intent-to-add", "--all");
+      return git("diff", commit);
+    },
     branchExists: async (name) => {
       // A name already taken on the remote is taken: the branch would be created
       // here without complaint and its very first push refused as out of date.
@@ -101,9 +118,19 @@ export async function openRepository(directory: string): Promise<GitRepository> 
   };
 }
 
+/**
+ * How much git may print before it is cut off. A night's diff is the largest
+ * thing anything here reads, and the default megabyte would refuse one on a
+ * ticket that touched a lockfile.
+ */
+const MOST_GIT_MAY_PRINT = 64 * 1024 * 1024;
+
 async function runGit(directory: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd: directory });
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: directory,
+      maxBuffer: MOST_GIT_MAY_PRINT,
+    });
     return stdout.trim();
   } catch (error) {
     throw new GitError(`git ${args.join(" ")} failed: ${describe(error)}`);

@@ -42,6 +42,8 @@ export interface AttemptBody {
   failure: string | null;
   output: string;
   recordedAt: string;
+  /** What the review made of it, or nothing where no reviewer ever saw it. */
+  review: { verdict: string; reasoning: string } | null;
 }
 
 /** The user's edit of the queue before it runs, as a request carries it. */

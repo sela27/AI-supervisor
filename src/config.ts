@@ -7,6 +7,7 @@ import {
 import type { NotificationSettings } from "./notifications/settings.js";
 import type { SafetyStops } from "./queue/safety.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
+import type { ReviewSettings } from "./verification/review.js";
 
 // Where the defaults come from is the file's business; what they are is every
 // caller's, so they are part of the configuration's own surface.
@@ -23,6 +24,8 @@ export interface SupervisorConfig {
   runner: ClaudeCodeRunnerOptions;
   /** What this instance tells somebody about, and where it tells them. */
   notifications: NotificationSettings;
+  /** Whether Verification has a second stage on this instance, and it reads the work. */
+  review: ReviewSettings;
   /** How far one run of this instance may go on its own before it stops. */
   safety: SafetyStops;
   /** What a start request falls back to when it does not say for itself. */
@@ -46,6 +49,12 @@ const DEFAULTS = {
   permissionMode: "bypassPermissions",
   /** On, so that pointing an instance at a webhook is all it takes to be told. */
   notificationsEnabled: true,
+  /**
+   * Off: a review is a second Run against the same subscription for every Attempt
+   * that already passed the project's own checks, and quota spent on reading is
+   * quota not spent on the queue. An instance that wants the assurance asks.
+   */
+  reviewEnabled: false,
   /** The queue is the queue: how far a run gets is the work's to decide, not a number's. */
   maxTickets: null,
   maxRuntimeMinutes: null,
@@ -91,6 +100,7 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
         : { webhook: file.notifications.webhook }),
       on: file.notifications?.on ?? {},
     },
+    review: { enabled: file.review?.enabled ?? DEFAULTS.reviewEnabled },
     safety: {
       maxTickets: stopSetTo(file.safety?.maxTickets, DEFAULTS.maxTickets),
       maxRuntimeMinutes: stopSetTo(file.safety?.maxRuntimeMinutes, DEFAULTS.maxRuntimeMinutes),

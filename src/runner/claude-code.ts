@@ -8,7 +8,9 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { messageOf } from "../errors.js";
-import type { RunOutcome, RunRequest, Runner } from "./runner.js";
+import { asRecord } from "../json.js";
+import type { AttemptReview } from "../verification/review.js";
+import type { ReviewOutcome, ReviewRequest, RunOutcome, RunRequest, Runner } from "./runner.js";
 
 /**
  * How a Run is launched. The real one is the Agent SDK's `query`; tests pass a
@@ -45,51 +47,110 @@ type ResultMessage = Extract<SDKMessage, { type: "result" }>;
 /**
  * The production Runner: one ticket, one fresh headless Claude Code Run, and
  * whatever the Run said about itself mapped onto the Supervisor's three
- * outcomes. It judges nothing about the work — that is Verification's to do.
+ * outcomes. It decides nothing about the work of its own accord — whether an
+ * Attempt stands is Verification's, here and in the review it is asked for.
  */
 export function claudeCodeRunner(options: ClaudeCodeRunnerOptions = {}): Runner {
   const launch = options.launch ?? ((parameters) => query(parameters));
 
   return {
     run: async (request) => {
-      const printed: string[] = [];
-      const record = (...lines: string[]): void => {
-        for (const line of lines) {
-          printed.push(line);
-          request.onOutput?.(line);
-        }
-      };
+      const transcript = await transcribe(
+        () =>
+          launch({
+            prompt: promptFor(request),
+            options: howToLaunch(request.projectDirectory, options),
+          }),
+        request.onOutput,
+      );
 
-      // The quota as the Run last reported it. Only its final word counts: a Run
-      // refused and then let through went on to finish, and its own failure —
-      // not the refusal it survived — is what stopped it.
-      let quota: SDKRateLimitInfo | undefined;
-      let result: ResultMessage | undefined;
-
-      try {
-        for await (const message of launch({
-          prompt: promptFor(request),
-          options: optionsFor(request, options),
-        })) {
-          if (message.type === "assistant") record(...linesOf(message));
-          if (message.type === "rate_limit_event") quota = message.rate_limit_info;
-          if (message.type === "result") result = message;
-        }
-      } catch (error) {
-        return brokeDown(error, printed.join("\n"));
+      if (transcript.broke !== undefined) {
+        return brokeDown(transcript.broke.error, transcript.output);
       }
+      return settle(transcript.result, transcript.quota, transcript.output);
+    },
 
-      return settle(result, quota, printed.join("\n"));
+    review: async (request) => {
+      const transcript = await transcribe(
+        () =>
+          launch({
+            prompt: reviewPromptFor(request),
+            options: {
+              ...howToLaunch(request.projectDirectory, options),
+              // The work is already in the prompt; these are for reading around
+              // it. A reviewer with nothing that can write cannot leave anything
+              // behind for the Checkpoint to sweep up as the Run's own work.
+              tools: ["Read", "Grep", "Glob"],
+              // A verdict has to be read by a machine, so it is asked for as one
+              // rather than picked back out of prose the reviewer phrased freely.
+              outputFormat: { type: "json_schema", schema: VERDICT_SCHEMA },
+            },
+          }),
+        request.onOutput,
+      );
+
+      return settleReview(transcript);
     },
   };
 }
 
-function optionsFor(request: RunRequest, options: ClaudeCodeRunnerOptions): Options {
+/** What everything launched here has in common: where it runs, and how freely. */
+function howToLaunch(projectDirectory: string, options: ClaudeCodeRunnerOptions): Options {
   return {
-    cwd: request.projectDirectory,
+    cwd: projectDirectory,
     permissionMode: options.permissionMode ?? "bypassPermissions",
     ...(options.model === undefined ? {} : { model: options.model }),
   };
+}
+
+/** One launch of Claude Code, and everything the Supervisor reads out of it. */
+interface Transcript {
+  result: ResultMessage | undefined;
+  /**
+   * The quota as the launch last reported it. Only its final word counts: one
+   * refused and then let through went on to finish, and its own failure — not
+   * the refusal it survived — is what stopped it.
+   */
+  quota: SDKRateLimitInfo | undefined;
+  output: string;
+  /**
+   * What the SDK threw, when it threw rather than finished. Its own failures — a
+   * missing CLI, a dropped connection — arrive this way rather than as a result.
+   */
+  broke: { error: unknown } | undefined;
+}
+
+/**
+ * Runs one launch to its end, printing as it goes, whatever it was launched for.
+ * The launch is begun inside the attempt rather than handed over already begun,
+ * so that everything it takes to start one — the prompt included — fails the way
+ * the launch itself does: as an outcome the Supervisor is handed back, never as
+ * a throw out of a Runner that is supposed to answer one.
+ */
+async function transcribe(
+  begin: () => AsyncIterable<SDKMessage>,
+  onOutput: ((chunk: string) => void) | undefined,
+): Promise<Transcript> {
+  const printed: string[] = [];
+  let quota: SDKRateLimitInfo | undefined;
+  let result: ResultMessage | undefined;
+
+  try {
+    for await (const message of begin()) {
+      if (message.type === "assistant") {
+        for (const line of linesOf(message)) {
+          printed.push(line);
+          onOutput?.(line);
+        }
+      }
+      if (message.type === "rate_limit_event") quota = message.rate_limit_info;
+      if (message.type === "result") result = message;
+    }
+  } catch (error) {
+    return { result, quota, output: printed.join("\n"), broke: { error } };
+  }
+
+  return { result, quota, output: printed.join("\n"), broke: undefined };
 }
 
 /**
@@ -130,6 +191,111 @@ function feedbackBlock(failure: string): string[] {
   ];
 }
 
+/** The only two shapes a verdict may come back in, asked for of the SDK itself. */
+const VERDICT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["approved", "rejected"] },
+    reasoning: {
+      type: "string",
+      description: "Why, in a sentence or two the next attempt could act on.",
+    },
+  },
+  required: ["verdict", "reasoning"],
+  additionalProperties: false,
+};
+
+/**
+ * How much of a diff is worth putting in front of a reviewer. Past this, one
+ * ticket's work has stopped being one ticket's work — and a prompt too long to
+ * send is a review that never happens at all, which is worse than a partial one
+ * the reviewer can read the rest of for itself.
+ */
+const LONGEST_DIFF = 200_000;
+
+/**
+ * What the review is sent off to do: the ticket it judges against, the whole of
+ * what the Attempt changed, and the two things that make it a review rather than
+ * another Attempt — change nothing, and reach a verdict either way.
+ */
+function reviewPromptFor(request: ReviewRequest): string {
+  const { ticket } = request;
+  const criteria = ticket.acceptanceCriteria.map((criterion) => `- ${criterion.text}`);
+
+  return [
+    `An unattended attempt at this ticket has just passed the project's own checks.`,
+    `Judge what it left behind against the ticket, and say whether it should stand.`,
+    ``,
+    `# ${ticket.title}`,
+    ``,
+    ...(criteria.length === 0 ? [] : [`Acceptance criteria:`, ...criteria, ``]),
+    `This is everything the attempt changed:`,
+    ``,
+    "```diff",
+    diffToJudge(request.diff),
+    "```",
+    ``,
+    `Read whatever else you need of the project to judge it, and change nothing:`,
+    `you are reviewing the work, not finishing it.`,
+    `Approve work that meets the acceptance criteria, and reject work that does not.`,
+  ].join("\n");
+}
+
+function diffToJudge(diff: string): string {
+  if (diff.trim() === "") return "(the attempt changed nothing a diff can show)";
+  if (diff.length <= LONGEST_DIFF) return diff;
+
+  return [
+    diff.slice(0, LONGEST_DIFF),
+    `...the rest of the diff was too long to include — read the files themselves.`,
+  ].join("\n");
+}
+
+/** Decides what the finished review amounts to. */
+function settleReview(transcript: Transcript): ReviewOutcome {
+  const { result, quota, output } = transcript;
+
+  if (transcript.broke !== undefined) {
+    const message = messageOf(transcript.broke.error);
+    if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output };
+    return unjudged(`the review broke down: ${message}`, output);
+  }
+
+  if (result === undefined) return unjudged("the review ended without reporting a result", output);
+  // A limit is not the ticket's fault here any more than it is during a Run.
+  if (stoppedByLimit(result, quota)) {
+    return { status: "limit-hit", resetAt: resetTime(quota?.resetsAt), output };
+  }
+
+  const verdict = verdictOf(result);
+  return verdict === undefined
+    ? unjudged(`the review reached no verdict: ${reasonFor(result)}`, output)
+    : { status: "reviewed", ...verdict, output };
+}
+
+/**
+ * A review that could not judge the work is not one that approved it. The whole
+ * point of the stage is that nothing reaches a Checkpoint unread, so an Attempt
+ * nobody managed to read is refused — and it says so in the words the morning
+ * needs to go and turn the review off or fix it.
+ */
+function unjudged(reasoning: string, output: string): ReviewOutcome {
+  return { status: "reviewed", verdict: "rejected", reasoning, output };
+}
+
+/** The verdict the review was asked for, when it came back as one. */
+function verdictOf(result: ResultMessage): AttemptReview | undefined {
+  if (result.subtype !== "success" || result.is_error) return undefined;
+
+  const said = asRecord(result.structured_output);
+  if (said?.verdict !== "approved" && said?.verdict !== "rejected") return undefined;
+
+  return {
+    verdict: said.verdict,
+    reasoning: typeof said.reasoning === "string" ? said.reasoning.trim() : "",
+  };
+}
+
 /** Decides what the finished Run amounts to. */
 function settle(
   result: ResultMessage | undefined,
@@ -167,12 +333,17 @@ function saysLimit(message: string): boolean {
   return USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
+/** How a limit reads in something that was thrown rather than reported. */
+const LIMIT_IN_WORDS = /usage limit|rate limit|limit reached/i;
+
+function threwOverTheLimit(message: string): boolean {
+  return saysLimit(message) || LIMIT_IN_WORDS.test(message);
+}
+
 /** The SDK's own failures — a missing CLI, a dropped connection — arrive as throws. */
 function brokeDown(error: unknown, output: string): RunOutcome {
   const message = messageOf(error);
-  if (saysLimit(message) || /usage limit|rate limit|limit reached/i.test(message)) {
-    return { status: "limit-hit", resetAt: null, output };
-  }
+  if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output };
   return { status: "failed", reason: `the Run broke down: ${message}`, output };
 }
 

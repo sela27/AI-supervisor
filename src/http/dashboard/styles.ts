@@ -134,6 +134,10 @@ main { display: grid; gap: 1rem; padding: 1rem; }
 .attempts { padding: 0 0.75rem 0.75rem; display: grid; gap: 0.75rem; }
 .attempt { border-top: 1px solid var(--edge); padding-top: 0.6rem; }
 .attempt-head { margin: 0 0 0.4rem; color: var(--faint); font-size: 0.8rem; }
+/* What the review made of the attempt, in the colour of the verdict it reached. */
+.verdict { margin: 0 0 0.4rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+.verdict[data-verdict="approved"] { color: var(--succeeded); }
+.verdict[data-verdict="rejected"] { color: var(--failed); }
 .hint { margin: 0; color: var(--faint); font-size: 0.85rem; }
 .retry { display: block; min-height: 44px; padding: 0; border: 0; background: none; font-family: inherit; text-align: left; text-decoration: underline; cursor: pointer; }
 

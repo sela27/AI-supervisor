@@ -9,6 +9,7 @@ import { isWebhookUrl } from "./notifications/webhook.js";
 import type { SafetyStops } from "./queue/safety.js";
 import { PERMISSION_MODES, type ClaudeCodeRunnerOptions } from "./runner/claude-code.js";
 import { isRepositoryName, type SourceSelection } from "./tickets/source.js";
+import type { ReviewSettings } from "./verification/review.js";
 import { isVerification } from "./verification/verifier.js";
 
 /** What an instance's config file is called, unless it is pointed at another one. */
@@ -38,6 +39,8 @@ export interface FileSettings {
   attemptBudget?: number;
   /** Whatever the file said about being told things; the rest is defaulted after. */
   notifications?: Partial<NotificationSettings>;
+  /** Whatever the file said about reviewing Attempts; the rest is defaulted after. */
+  review?: Partial<ReviewSettings>;
   /** Whatever the file said about how far a run may go; the rest is defaulted after. */
   safety?: Partial<SafetyStops>;
   defaults: QueueRunDefaults;
@@ -52,12 +55,14 @@ const FILE_SETTINGS = [
   "runner",
   "source",
   "notifications",
+  "review",
   "safety",
   "project",
 ];
 const RUNNER_SETTINGS = ["model", "permissionMode"];
 const SOURCE_SETTINGS = ["type", "directory", "repository"];
 const NOTIFICATION_SETTINGS = ["enabled", "webhook", "on"];
+const REVIEW_SETTINGS = ["enabled"];
 const SAFETY_SETTINGS = ["maxTickets", "maxRuntimeMinutes", "consecutiveFailures"];
 const PROJECT_SETTINGS = ["directory", "verify", "pushCheckpoints"];
 
@@ -102,6 +107,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const runner = section(path, settings.runner, RUNNER_SETTINGS, "runner");
   const source = section(path, settings.source, SOURCE_SETTINGS, "source");
   const notifications = section(path, settings.notifications, NOTIFICATION_SETTINGS, "notifications");
+  const reviewing = section(path, settings.review, REVIEW_SETTINGS, "review");
   const safety = section(path, settings.safety, SAFETY_SETTINGS, "safety");
   const project = section(path, settings.project, PROJECT_SETTINGS, "project");
 
@@ -114,6 +120,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const permissionMode = mode(path, runner.permissionMode);
   const ticketSource = sourceSelection(path, source);
   const told = notificationSettings(path, notifications);
+  const reviewsAttempts = flag(path, reviewing.enabled, "review.enabled");
   const stops = safetyStops(path, safety);
   const projectDirectory = directory(path, project.directory, "project.directory");
   const verify = commands(path, project.verify);
@@ -128,6 +135,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(attemptBudget === undefined ? {} : { attemptBudget }),
     ...(told === undefined ? {} : { notifications: told }),
+    ...(reviewsAttempts === undefined ? {} : { review: { enabled: reviewsAttempts } }),
     ...(stops === undefined ? {} : { safety: stops }),
     defaults: {
       ...(ticketSource === undefined ? {} : { source: ticketSource }),

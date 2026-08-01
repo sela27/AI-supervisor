@@ -4,6 +4,9 @@
     "type": "local",
     "directory": "/project/.scratch/issues"
   },
+  "review": {
+    "enabled": false
+  },
   "safety": {
     "consecutiveFailures": 3
   },

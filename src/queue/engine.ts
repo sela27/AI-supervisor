@@ -2,10 +2,11 @@ import type { Clock } from "../clock.js";
 import { messageOf } from "../errors.js";
 import type { EventSink, SupervisorEvent } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
-import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
+import type { ReviewOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
 import type { SourceSelection, TicketSource } from "../tickets/source.js";
 import { isDone, type Ticket } from "../tickets/ticket.js";
+import type { ReviewSettings } from "../verification/review.js";
 import { verify } from "../verification/verifier.js";
 import { downstreamOf } from "./dependents.js";
 import type { QueueEdit } from "./edit.js";
@@ -250,6 +251,8 @@ interface RunContext {
   goingDown: boolean;
   /** How many Attempts a ticket may spend before the run gives up on it. */
   attemptBudget: number;
+  /** Whether a verified Attempt is put in front of a reviewer before it stands. */
+  review: ReviewSettings;
   /** How far this run may go on its own before it gives up and leaves the rest. */
   safety: SafetyStops;
   /**
@@ -292,6 +295,12 @@ export interface QueueEngineDependencies {
    * what refused the last one.
    */
   attemptBudget: number;
+  /**
+   * Whether Verification has a second stage. Off is the Supervisor every other
+   * ticket described; on is one that spends a Run per verified Attempt having it
+   * read.
+   */
+  review: ReviewSettings;
   /** How far one run may go on its own before it stops and leaves the rest. */
   safety: SafetyStops;
 }
@@ -364,6 +373,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       limit: undefined,
       goingDown: false,
       attemptBudget: dependencies.attemptBudget,
+      review: dependencies.review,
       safety: dependencies.safety,
       startAt: request.startAt,
       startedAt: undefined,
@@ -418,6 +428,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       limit: limitSpell(record),
       goingDown: false,
       attemptBudget: dependencies.attemptBudget,
+      review: dependencies.review,
       safety: dependencies.safety,
       startAt: record.run.state === "armed" ? asMoment(record.run.resumeAt) : undefined,
       startedAt: asMoment(record.startedAt),
@@ -1260,17 +1271,32 @@ async function attempt(
   });
 
   if (outcome.status === "limit-hit") {
-    await discardOnLimit(queued, outcome, context);
+    await discardOnLimit(queued, outcome.output, context);
     throw usageLimitStopped(queued, outcome.resetAt);
   }
 
-  const refusal = await verificationRefusal(outcome, before, context);
+  const refusedByChecks = await verificationRefusal(outcome, before, context);
+  // Verification's second stage, for an instance that asked for one. Nothing the
+  // checks have already refused is ever put in front of a reviewer.
+  const review =
+    refusedByChecks === undefined ? await reviewTheWork(queued, before, context) : undefined;
+
+  if (review?.status === "limit-hit") {
+    // The Attempt was verified but never judged, and an Attempt nobody finished
+    // reading is not one to hold anything against: it goes back the way a Run the
+    // quota cut short does, and the ticket keeps every go it had.
+    await discardOnLimit(queued, joined(outcome.output, review.output), context);
+    throw usageLimitStopped(queued, review.resetAt);
+  }
+
+  const refusal = refusedByChecks ?? refusalFromReview(review);
   // The log is written down before anything else, because the reset that follows
   // a failure is the last chance to have it.
   record(queued, context, {
     outcome: refusal === undefined ? "succeeded" : "failed",
     failure: refusal?.reason ?? null,
-    output: joined(outcome.output, refusal?.output),
+    output: joined(outcome.output, refusedByChecks?.output, review?.output),
+    review: review === undefined ? null : { verdict: review.verdict, reasoning: review.reasoning },
   });
 
   if (refusal === undefined) return undefined;
@@ -1333,12 +1359,8 @@ async function pushCheckpoint(context: RunContext): Promise<void> {
  * A limit is never allowed to read as a ticket that failed, nor to cost the ticket
  * one of its Attempts.
  */
-async function discardOnLimit(
-  queued: Queued,
-  outcome: Extract<RunOutcome, { status: "limit-hit" }>,
-  context: RunContext,
-): Promise<void> {
-  record(queued, context, { outcome: "limit-hit", failure: null, output: outcome.output });
+async function discardOnLimit(queued: Queued, output: string, context: RunContext): Promise<void> {
+  record(queued, context, { outcome: "limit-hit", failure: null, output, review: null });
 
   await context.repository.resetTo(context.restorePoint);
   queued.entry.state = "pending";
@@ -1403,6 +1425,55 @@ async function verificationRefusal(
   const verification = await verify(context.project.verify, context.project.directory);
   if (verification.ok) return undefined;
   return { reason: verification.failure, output: verification.output };
+}
+
+/**
+ * Verification's second stage, for an instance that asked for one: a Run of its
+ * own that reads what the Attempt left behind and says whether it meets the
+ * ticket. Nothing back at all where the instance never asked — and it is never
+ * reached for an Attempt the checks already refused, because work that does not
+ * build is not work a reviewer has anything to say about.
+ *
+ * The reviewer is handed the work rather than pointed at it. A reviewer that
+ * could reach into the project could leave something behind, and the Checkpoint
+ * that follows an approval sweeps up whatever it finds — a Checkpoint has to be
+ * the Run's work and nobody else's.
+ */
+async function reviewTheWork(
+  queued: Queued,
+  before: string,
+  context: RunContext,
+): Promise<ReviewOutcome | undefined> {
+  if (!context.review.enabled) return undefined;
+
+  return context.runner.review({
+    ticket: queued.ticket,
+    projectDirectory: context.project.directory,
+    diff: await context.repository.diffSince(before),
+    // The ticket is still being attempted, so what the reviewer says goes where
+    // the Run's own narration went: to whoever is watching this ticket.
+    onOutput: (chunk) => context.live.lines.push(chunk),
+  });
+}
+
+/**
+ * A review that turned the work down, as the refusal it is. The reviewer's own
+ * words are the whole of it: they are what the ticket fails with and what the
+ * next Attempt is given to be smarter about, so nothing else would help either.
+ */
+function refusalFromReview(review: ReviewOutcome | undefined): Refusal | undefined {
+  if (review?.status !== "reviewed" || review.verdict === "approved") return undefined;
+
+  // A reviewer that turned the work down and said nothing about why has still
+  // turned it down. Saying so plainly beats a reason that trails off into
+  // nothing, which is what the morning would otherwise read on the ticket.
+  const said = review.reasoning.trim();
+  const reason =
+    said === ""
+      ? "the review refused the attempt without saying why"
+      : `the review refused the attempt: ${said}`;
+
+  return { reason, output: "" };
 }
 
 /**

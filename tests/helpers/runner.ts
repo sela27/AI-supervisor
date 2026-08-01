@@ -1,7 +1,13 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { RunOutcome, RunRequest, Runner } from "../../src/runner/runner.js";
+import type {
+  ReviewOutcome,
+  ReviewRequest,
+  RunOutcome,
+  RunRequest,
+  Runner,
+} from "../../src/runner/runner.js";
 import type { TestProject } from "./project.js";
 
 /** The Runner seam, scripted by the test and recording what it was asked to do. */
@@ -9,6 +15,11 @@ export interface FakeRunner extends Runner {
   /** Ticket ids in the order the Supervisor asked for them. */
   order: string[];
   requests: RunRequest[];
+  /**
+   * What was put in front of a reviewer, in order. Empty for an instance that
+   * never asked for reviews, which is every instance that was told nothing.
+   */
+  reviews: ReviewRequest[];
   /** True if an Attempt ever started while another was still in flight. */
   overlapped: boolean;
 }
@@ -17,13 +28,21 @@ export type FakeRunnerBehaviour = (
   request: RunRequest,
 ) => Promise<RunOutcome | void> | RunOutcome | void;
 
+export type FakeReviewBehaviour = (
+  request: ReviewRequest,
+) => Promise<ReviewOutcome | void> | ReviewOutcome | void;
+
 /** Behaviour that returns nothing counts as a successful Attempt with no output. */
-export function fakeRunner(behaviour: FakeRunnerBehaviour = () => {}): FakeRunner {
+export function fakeRunner(
+  behaviour: FakeRunnerBehaviour = () => {},
+  reviewing: FakeReviewBehaviour = () => {},
+): FakeRunner {
   let inFlight = 0;
 
   const runner: FakeRunner = {
     order: [],
     requests: [],
+    reviews: [],
     overlapped: false,
     run: async (request) => {
       if (inFlight > 0) runner.overlapped = true;
@@ -35,6 +54,17 @@ export function fakeRunner(behaviour: FakeRunnerBehaviour = () => {}): FakeRunne
       } finally {
         inFlight -= 1;
       }
+    },
+    review: async (request) => {
+      runner.reviews.push(request);
+      return (
+        (await reviewing(request)) ?? {
+          status: "reviewed",
+          verdict: "approved",
+          reasoning: "It meets the ticket.",
+          output: "",
+        }
+      );
     },
   };
 

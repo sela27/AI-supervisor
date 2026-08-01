@@ -300,6 +300,15 @@ export const DASHBOARD_SCRIPT = String.raw`
     card.className = "attempt";
     card.append(element("p", "attempt-head", attempt.outcome + " · " + when(attempt.recordedAt)));
     if (attempt.failure) card.append(element("p", "failure", attempt.failure));
+    // Only an instance that asked for reviews has one of these, and an approval
+    // is worth showing as much as a refusal: it is the whole of the evidence
+    // that anything read the work the morning is about to trust.
+    if (attempt.review) {
+      const verdict = element("p", "verdict", "review " + attempt.review.verdict);
+      verdict.dataset.verdict = attempt.review.verdict;
+      if (attempt.review.reasoning) verdict.textContent += " — " + attempt.review.reasoning;
+      card.append(verdict);
+    }
     card.append(element("pre", "log", attempt.output || "(nothing was printed)"));
     return card;
   }
