@@ -11,6 +11,7 @@ import { messageOf } from "../errors.js";
 import { asRecord } from "../json.js";
 import type { ReviewAnswer } from "../verification/review.js";
 import type { ReviewOutcome, ReviewRequest, RunOutcome, RunRequest, Runner } from "./runner.js";
+import { spendOf, type Spend } from "./spend.js";
 
 /**
  * How a Run is launched. The real one is the Agent SDK's `query`; tests pass a
@@ -64,10 +65,8 @@ export function claudeCodeRunner(options: ClaudeCodeRunnerOptions = {}): Runner 
         request.onOutput,
       );
 
-      if (transcript.broke !== undefined) {
-        return brokeDown(transcript.broke.error, transcript.output);
-      }
-      return settle(transcript.result, transcript.quota, transcript.output);
+      if (transcript.broke !== undefined) return brokeDown(transcript.broke.error, transcript);
+      return settle(transcript);
     },
 
     review: async (request) => {
@@ -112,6 +111,12 @@ interface Transcript {
    * the refusal it survived — is what stopped it.
    */
   quota: SDKRateLimitInfo | undefined;
+  /**
+   * What the launch reported it cost. A launch that broke down before reporting
+   * a result spent quota and left no figure for it — there is nothing to be done
+   * about that but leave it missing, which is not the same as free.
+   */
+  spend: Spend | undefined;
   output: string;
   /**
    * What the SDK threw, when it threw rather than finished. Its own failures — a
@@ -134,6 +139,7 @@ async function transcribe(
   const printed: string[] = [];
   let quota: SDKRateLimitInfo | undefined;
   let result: ResultMessage | undefined;
+  let broke: { error: unknown } | undefined;
 
   try {
     for await (const message of begin()) {
@@ -147,10 +153,25 @@ async function transcribe(
       if (message.type === "result") result = message;
     }
   } catch (error) {
-    return { result, quota, output: printed.join("\n"), broke: { error } };
+    broke = { error };
   }
 
-  return { result, quota, output: printed.join("\n"), broke: undefined };
+  return {
+    result,
+    quota,
+    spend: spendReportedBy(result),
+    output: printed.join("\n"),
+    broke,
+  };
+}
+
+/** What the launch said it spent, as far as it said anything about it at all. */
+function spendReportedBy(result: ResultMessage | undefined): Spend | undefined {
+  return spendOf({
+    costUsd: result?.total_cost_usd,
+    turns: result?.num_turns,
+    durationMs: result?.duration_ms,
+  });
 }
 
 /**
@@ -263,24 +284,26 @@ function diffToJudge(diff: string): string {
 
 /** Decides what the finished review amounts to. */
 function settleReview(transcript: Transcript): ReviewOutcome {
-  const { result, quota, output } = transcript;
+  const { result, quota, spend, output } = transcript;
 
   if (transcript.broke !== undefined) {
     const message = messageOf(transcript.broke.error);
-    if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output };
-    return unjudged(`the review broke down: ${message}`, output);
+    if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output, spend };
+    return unjudged(`the review broke down: ${message}`, transcript);
   }
 
-  if (result === undefined) return unjudged("the review ended without reporting a result", output);
+  if (result === undefined) {
+    return unjudged("the review ended without reporting a result", transcript);
+  }
   // A limit is not the ticket's fault here any more than it is during a Run.
   if (stoppedByLimit(result, quota)) {
-    return { status: "limit-hit", resetAt: resetTime(quota?.resetsAt), output };
+    return { status: "limit-hit", resetAt: resetTime(quota?.resetsAt), output, spend };
   }
 
   const verdict = verdictOf(result);
   return verdict === undefined
-    ? unjudged(`the review reached no verdict: ${reasonFor(result)}`, output)
-    : { status: "reviewed", ...verdict, output };
+    ? unjudged(`the review reached no verdict: ${reasonFor(result)}`, transcript)
+    : { status: "reviewed", ...verdict, output, spend };
 }
 
 /**
@@ -289,8 +312,15 @@ function settleReview(transcript: Transcript): ReviewOutcome {
  * nobody managed to read is refused — and it says so in the words the morning
  * needs to go and turn the review off or fix it.
  */
-function unjudged(reasoning: string, output: string): ReviewOutcome {
-  return { status: "reviewed", verdict: "rejected", reasoning, criteriaMet: [], output };
+function unjudged(reasoning: string, transcript: Transcript): ReviewOutcome {
+  return {
+    status: "reviewed",
+    verdict: "rejected",
+    reasoning,
+    criteriaMet: [],
+    output: transcript.output,
+    spend: transcript.spend,
+  };
 }
 
 /** The answer the review was asked for, when it came back as one. */
@@ -319,22 +349,20 @@ function criteriaOf(named: unknown): string[] {
 }
 
 /** Decides what the finished Run amounts to. */
-function settle(
-  result: ResultMessage | undefined,
-  quota: SDKRateLimitInfo | undefined,
-  output: string,
-): RunOutcome {
+function settle(transcript: Transcript): RunOutcome {
+  const { result, quota, spend, output } = transcript;
+
   if (result === undefined) {
-    return { status: "failed", reason: "the Run ended without reporting a result", output };
+    return { status: "failed", reason: "the Run ended without reporting a result", output, spend };
   }
   if (result.subtype === "success" && !result.is_error) {
-    return { status: "succeeded", output };
+    return { status: "succeeded", output, spend };
   }
   // A limit is not the ticket's fault, so it must never be read as one.
   if (stoppedByLimit(result, quota)) {
-    return { status: "limit-hit", resetAt: resetTime(quota?.resetsAt), output };
+    return { status: "limit-hit", resetAt: resetTime(quota?.resetsAt), output, spend };
   }
-  return { status: "failed", reason: reasonFor(result), output };
+  return { status: "failed", reason: reasonFor(result), output, spend };
 }
 
 /**
@@ -363,10 +391,10 @@ function threwOverTheLimit(message: string): boolean {
 }
 
 /** The SDK's own failures — a missing CLI, a dropped connection — arrive as throws. */
-function brokeDown(error: unknown, output: string): RunOutcome {
+function brokeDown(error: unknown, { output, spend }: Transcript): RunOutcome {
   const message = messageOf(error);
-  if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output };
-  return { status: "failed", reason: `the Run broke down: ${message}`, output };
+  if (threwOverTheLimit(message)) return { status: "limit-hit", resetAt: null, output, spend };
+  return { status: "failed", reason: `the Run broke down: ${message}`, output, spend };
 }
 
 const RESULT_FAILURES: Record<string, string> = {

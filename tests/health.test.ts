@@ -23,7 +23,7 @@ test("a freshly booted Supervisor reports itself healthy over HTTP", async () =>
   // all proves storage was created and migrated.
   expect(await response.json()).toEqual({
     status: "ok",
-    schemaVersion: 3,
+    schemaVersion: 4,
   });
 });
 
@@ -42,5 +42,5 @@ test("restarting onto an existing data directory still reports healthy", async (
 
   const response = await supervisor.request("/api/health");
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ status: "ok", schemaVersion: 3 });
+  expect(await response.json()).toEqual({ status: "ok", schemaVersion: 4 });
 });

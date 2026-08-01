@@ -687,6 +687,38 @@ ticket is left exactly as it was found, and it costs the ticket none of its budg
 The price is a Run per verified Attempt, against the same subscription the queue runs on. On
 a night with a tight quota, that is a night that gets through fewer tickets.
 
+## What the night spent
+
+Every Attempt is filed with what its Run reported spending — what it cost, how many turns it
+took, and how long it took them — and the run adds them up:
+
+```bash
+curl localhost:4317/api/queue
+```
+
+```json
+{ "state": "completed", "spent": { "costUsd": 4.71, "turns": 186, "durationMs": 9184000 } }
+```
+
+The same three figures come back per Attempt under `/api/queue/tickets/<id>/attempts`, beside
+its log and its verdict, so a night that cost more than it should can be read down to the
+ticket that did it.
+
+**Every Attempt counts, however it ended.** One a `verify` command refused and one a usage
+limit cut short spent quota exactly as the one that succeeded did, so both are in the total —
+a night of retries that leaves them out is a night reported at a fraction of its price. An
+Attempt that was [reviewed](#having-the-work-read-before-it-stands) carries the review's own
+Run in its figures too: it is a Run, and it is spending the same subscription.
+
+**A figure nothing reported is missing, never nought.** A Run that broke down before saying
+anything about itself, and every Attempt recorded by a build older than this one, come back
+with `spend: null` rather than with zeros that would read as free. The three figures stand or
+fall one at a time, too: a Run that reported its turns and nothing else is filed as
+`{ "turns": 14 }`, so read each key for itself rather than assuming all three are there.
+`costUsd` is what the Run priced itself at; on a subscription that is what the work would
+have cost through the API, not a charge. Totals are rounded to the nearest millionth, because
+adding floating-point money together is how a bill ends up reading `0.30000000000000004`.
+
 ## When a usage limit is hit
 
 A usage limit is not a ticket failure and is never recorded as one. The interrupted Attempt

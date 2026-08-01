@@ -1,5 +1,6 @@
 import { expect } from "vitest";
 
+import type { Spend } from "../../src/runner/spend.js";
 import type { TestProject } from "./project.js";
 import type { TestSupervisor } from "./supervisor.js";
 
@@ -18,6 +19,8 @@ export interface QueueBody {
   stoppedBy: string | null;
   /** Why Checkpoints are not reaching the remote, when they are not. */
   pushFailure: string | null;
+  /** What the run has spent so far, or nothing where no Run reported a figure. */
+  spent: Spend | null;
   tickets: {
     id: string;
     title: string;
@@ -44,6 +47,8 @@ export interface AttemptBody {
   recordedAt: string;
   /** What the review made of it, or nothing where no reviewer ever saw it. */
   review: { verdict: string; reasoning: string } | null;
+  /** What it spent, or nothing where its Run reported no figures. */
+  spend: Spend | null;
 }
 
 /** The user's edit of the queue before it runs, as a request carries it. */

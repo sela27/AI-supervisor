@@ -260,6 +260,65 @@ test("output is handed over as it arrives, so a Run can be watched live", async 
   expect(outcome.output).toBe(WORKING_TRANSCRIPT);
 });
 
+test("what a Run reported spending is handed back with whatever it came to", async () => {
+  const spent = { total_cost_usd: 0.37, num_turns: 14, duration_ms: 128_000 };
+
+  const worked = recordedRun(runSucceeded("Done.", spent));
+  expect(await claudeCodeRunner({ launch: worked.launch }).run(request())).toMatchObject({
+    status: "succeeded",
+    spend: { costUsd: 0.37, turns: 14, durationMs: 128_000 },
+  });
+
+  // The quota went on a Run that failed and on one the quota itself refused
+  // exactly as it went on one that worked, so all three carry what they spent.
+  const failed = recordedRun(runErrored("error_max_turns", spent));
+  expect(await claudeCodeRunner({ launch: failed.launch }).run(request())).toMatchObject({
+    status: "failed",
+    spend: { costUsd: 0.37, turns: 14, durationMs: 128_000 },
+  });
+
+  const refused = recordedRun(
+    quotaSaid("rejected"),
+    runErrored("error_during_execution", { ...spent, terminal_reason: "blocking_limit" }),
+  );
+  expect(await claudeCodeRunner({ launch: refused.launch }).run(request())).toMatchObject({
+    status: "limit-hit",
+    spend: { costUsd: 0.37, turns: 14, durationMs: 128_000 },
+  });
+});
+
+test("a Run that reported no figures is handed back without any, not as a free one", async () => {
+  const outcome = await claudeCodeRunner({ launch: workingRun().launch }).run(request());
+
+  // A nought would read as a Run that cost nothing, and no Run costs nothing.
+  expect(outcome.spend).toBeUndefined();
+
+  // Half a report is still a report: what was said is kept, and what was not is
+  // left out rather than filled in.
+  const partly = recordedRun(runSucceeded("Done.", { num_turns: 3 }));
+  expect(await claudeCodeRunner({ launch: partly.launch }).run(request())).toMatchObject({
+    spend: { turns: 3 },
+  });
+
+  // A Run that broke down before it said anything about itself spent quota and
+  // left no figure for it. There is nothing to be done about that but leave it
+  // missing — which is still not the same as free.
+  const broke = failingRun(new Error("spawn claude ENOENT"), assistantSaying("Starting work."));
+  expect((await claudeCodeRunner({ launch: broke.launch }).run(request())).spend).toBeUndefined();
+});
+
+test("a review reports what it spent like the Run it is", async () => {
+  const recorded = recordedRun(
+    reviewSaid("approved", "It meets the ticket.", [], { total_cost_usd: 0.05, num_turns: 2 }),
+  );
+
+  const outcome = await claudeCodeRunner({ launch: recorded.launch }).review(toReview());
+
+  // An instance that turned reviews on is spending a Run's worth of quota on
+  // every Attempt that reaches one, and the night's bill has to say so.
+  expect(outcome).toMatchObject({ verdict: "approved", spend: { costUsd: 0.05, turns: 2 } });
+});
+
 test("a review that reached a verdict is handed back as one, reasoning and all", async () => {
   const recorded = recordedRun(
     assistantSaying("Reading the diff."),

@@ -1,5 +1,6 @@
 import type { Ticket } from "../tickets/ticket.js";
 import type { ReviewAnswer } from "../verification/review.js";
+import type { Spend } from "./spend.js";
 
 /** Everything a Run has to work from: one ticket, and the project it applies to. */
 export interface RunRequest {
@@ -25,11 +26,15 @@ export interface RunRequest {
  * `limit-hit` is neither of the other two: the subscription's usage limit stopped
  * the Run before it could settle the ticket, so nothing has been learned about
  * the ticket at all. `resetAt` is when the limit lifts, when the Run could say.
+ *
+ * What it spent is carried by all three alike: quota goes on a Run that failed
+ * and on one the quota itself cut short exactly as it goes on one that worked.
+ * Nothing where the Run reported nothing.
  */
 export type RunOutcome =
-  | { status: "succeeded"; output: string }
-  | { status: "failed"; reason: string; output: string }
-  | { status: "limit-hit"; resetAt: Date | null; output: string };
+  | { status: "succeeded"; output: string; spend?: Spend }
+  | { status: "failed"; reason: string; output: string; spend?: Spend }
+  | { status: "limit-hit"; resetAt: Date | null; output: string; spend?: Spend };
 
 /** A Run that got far enough to say something about the ticket itself. */
 export type SettledRun = Exclude<RunOutcome, { status: "limit-hit" }>;
@@ -55,8 +60,8 @@ export interface ReviewRequest {
  * unjudged as one whose own Run was cut short.
  */
 export type ReviewOutcome =
-  | ({ status: "reviewed"; output: string } & ReviewAnswer)
-  | { status: "limit-hit"; resetAt: Date | null; output: string };
+  | ({ status: "reviewed"; output: string; spend?: Spend } & ReviewAnswer)
+  | { status: "limit-hit"; resetAt: Date | null; output: string; spend?: Spend };
 
 /** Executes exactly one Attempt: a single headless Claude Code Run for one ticket. */
 export interface Runner {

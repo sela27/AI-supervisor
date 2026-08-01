@@ -61,8 +61,19 @@ export function quotaSaid(status: "allowed" | "rejected", resetsAt?: number): SD
   });
 }
 
-export function runSucceeded(result = "Done."): SDKMessage {
-  return fragment({ type: "result", subtype: "success", is_error: false, result });
+/**
+ * What a result message says the launch spent, in the SDK's own spelling. A real
+ * one always carries all three; a recording only bothers where a test is about
+ * them, which is also how a Run that reports none of them is played back.
+ */
+export interface Spending {
+  total_cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+}
+
+export function runSucceeded(result = "Done.", spent: Spending = {}): SDKMessage {
+  return fragment({ type: "result", subtype: "success", is_error: false, result, ...spent });
 }
 
 /**
@@ -74,6 +85,7 @@ export function reviewSaid(
   verdict: "approved" | "rejected",
   reasoning: string,
   criteriaMet: unknown = [],
+  spent: Spending = {},
 ): SDKMessage {
   return fragment({
     type: "result",
@@ -81,12 +93,13 @@ export function reviewSaid(
     is_error: false,
     result: reasoning,
     structured_output: { verdict, reasoning, criteriaMet },
+    ...spent,
   });
 }
 
 export function runErrored(
   subtype: string,
-  extras: { errors?: string[]; terminal_reason?: string; result?: string } = {},
+  extras: Spending & { errors?: string[]; terminal_reason?: string; result?: string } = {},
 ): SDKMessage {
   return fragment({ type: "result", subtype, is_error: true, errors: [], ...extras });
 }

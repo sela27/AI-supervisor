@@ -8,6 +8,7 @@ import type {
   RunRequest,
   Runner,
 } from "../../src/runner/runner.js";
+import type { Spend } from "../../src/runner/spend.js";
 import type { TestProject } from "./project.js";
 
 /** The Runner seam, scripted by the test and recording what it was asked to do. */
@@ -32,6 +33,18 @@ export type FakeReviewBehaviour = (
   request: ReviewRequest,
 ) => Promise<ReviewOutcome | void> | ReviewOutcome | void;
 
+/** What behaviour that says nothing about the Attempt amounts to. */
+const SUCCEEDED: RunOutcome = { status: "succeeded", output: "" };
+
+/** And what a reviewer that was scripted with nothing in particular says. */
+const APPROVED: ReviewOutcome = {
+  status: "reviewed",
+  verdict: "approved",
+  reasoning: "It meets the ticket.",
+  criteriaMet: [],
+  output: "",
+};
+
 /** Behaviour that returns nothing counts as a successful Attempt with no output. */
 export function fakeRunner(
   behaviour: FakeRunnerBehaviour = () => {},
@@ -50,22 +63,14 @@ export function fakeRunner(
       runner.order.push(request.ticket.id);
       runner.requests.push(request);
       try {
-        return (await behaviour(request)) ?? { status: "succeeded", output: "" };
+        return (await behaviour(request)) ?? SUCCEEDED;
       } finally {
         inFlight -= 1;
       }
     },
     review: async (request) => {
       runner.reviews.push(request);
-      return (
-        (await reviewing(request)) ?? {
-          status: "reviewed",
-          verdict: "approved",
-          reasoning: "It meets the ticket.",
-          criteriaMet: [],
-          output: "",
-        }
-      );
+      return (await reviewing(request)) ?? APPROVED;
     },
   };
 
@@ -86,6 +91,19 @@ export function approves(
 /** A reviewer that turns the work down, for the reason it gives. */
 export function refuses(reasoning: string, criteriaMet: string[] = []): FakeReviewBehaviour {
   return () => ({ status: "reviewed", verdict: "rejected", reasoning, criteriaMet, output: "" });
+}
+
+/**
+ * A Run that reports what it spent, whatever else it did. Every real Run reports
+ * its own figures; the fake ones only bother where a test is about them.
+ */
+export function spending(spend: Spend, behaviour: FakeRunnerBehaviour): FakeRunnerBehaviour {
+  return async (request) => ({ ...((await behaviour(request)) ?? SUCCEEDED), spend });
+}
+
+/** A review that reports what it spent, on top of what it made of the work. */
+export function reviewSpending(spend: Spend, reviewing: FakeReviewBehaviour): FakeReviewBehaviour {
+  return async (request) => ({ ...((await reviewing(request)) ?? APPROVED), spend });
 }
 
 /** A Runner that does the ticket's work and commits it, as a real Run would. */

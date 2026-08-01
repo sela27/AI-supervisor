@@ -3,6 +3,7 @@ import { messageOf } from "../errors.js";
 import type { EventSink, SupervisorEvent } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { ReviewOutcome, Runner, SettledRun } from "../runner/runner.js";
+import { spentAltogether, type Spend } from "../runner/spend.js";
 import type { AttemptRecord, Storage } from "../storage.js";
 import type { SourceSelection, TicketSource } from "../tickets/source.js";
 import { isDone, type Ticket, type TicketReview } from "../tickets/ticket.js";
@@ -144,6 +145,13 @@ export interface QueueEngine {
   shutDown(): void;
   /** The run in progress, or the last one that finished. */
   current(): QueueRun | undefined;
+  /**
+   * What that run has spent, every Attempt of it added up — the ones that failed
+   * and the ones a usage limit cut short included, because the quota went on
+   * those too. Nothing where there is no run, and nothing where no Run of it
+   * reported a figure.
+   */
+  spentSoFar(): Spend | null;
   /**
    * What the Attempt in flight has printed so far — the only view of a Run while
    * it is still going. Empty for any ticket but the one being attempted.
@@ -488,6 +496,8 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
 
   return {
     current: () => (context ? snapshot(context.run) : undefined),
+
+    spentSoFar: () => (context ? context.storage.spentOn(context.run.id) : null),
 
     liveOutput: (ticketId) => (live.ticketId === ticketId ? live.lines.join("\n") : ""),
 
@@ -1273,7 +1283,7 @@ async function attempt(
   });
 
   if (outcome.status === "limit-hit") {
-    await discardOnLimit(queued, outcome.output, context);
+    await discardOnLimit(queued, { output: outcome.output, spend: outcome.spend }, context);
     throw usageLimitStopped(queued, outcome.resetAt);
   }
 
@@ -1287,7 +1297,14 @@ async function attempt(
     // The Attempt was verified but never judged, and an Attempt nobody finished
     // reading is not one to hold anything against: it goes back the way a Run the
     // quota cut short does, and the ticket keeps every go it had.
-    await discardOnLimit(queued, joined(outcome.output, review.output), context);
+    await discardOnLimit(
+      queued,
+      {
+        output: joined(outcome.output, review.output),
+        spend: spentAltogether([outcome.spend, review.spend]),
+      },
+      context,
+    );
     throw usageLimitStopped(queued, review.resetAt);
   }
 
@@ -1299,6 +1316,9 @@ async function attempt(
     failure: refusal?.reason ?? null,
     output: joined(outcome.output, refusedByChecks?.output, review?.output),
     review: review === undefined ? null : { verdict: review.verdict, reasoning: review.reasoning },
+    // The review is a Run of its own, and an instance that turned reviews on is
+    // spending that quota on every Attempt that gets as far as one.
+    spend: spentAltogether([outcome.spend, review?.spend]) ?? null,
   });
 
   if (refusal !== undefined) {
@@ -1386,10 +1406,22 @@ async function pushCheckpoint(context: RunContext): Promise<void> {
  * on the Frontier untouched and nothing is written to the Ticket Source.
  *
  * A limit is never allowed to read as a ticket that failed, nor to cost the ticket
- * one of its Attempts.
+ * one of its Attempts. What the Run spent before the quota refused it is another
+ * matter: that is gone whatever became of the ticket, so it is filed like any
+ * other Attempt's.
  */
-async function discardOnLimit(queued: Queued, output: string, context: RunContext): Promise<void> {
-  record(queued, context, { outcome: "limit-hit", failure: null, output, review: null });
+async function discardOnLimit(
+  queued: Queued,
+  reported: Interrupted,
+  context: RunContext,
+): Promise<void> {
+  record(queued, context, {
+    outcome: "limit-hit",
+    failure: null,
+    output: reported.output,
+    review: null,
+    spend: reported.spend ?? null,
+  });
 
   await context.repository.resetTo(context.restorePoint);
   queued.entry.state = "pending";
@@ -1428,6 +1460,16 @@ function usageLimitStopped(queued: Queued, resetAt: Date | null): UsageLimitErro
 
 function liftsAt(resetAt: Date | null): string {
   return resetAt === null ? "" : `, and lifts at ${resetAt.toISOString()}`;
+}
+
+/**
+ * What an Attempt the usage limit cut off leaves to be filed. Nothing was
+ * learned about the ticket, so this is the whole of what there is to keep: what
+ * it printed on its way, and what it spent printing it.
+ */
+interface Interrupted {
+  output: string;
+  spend: Spend | undefined;
 }
 
 /** Why Verification refused an Attempt, and what the refusing check printed. */

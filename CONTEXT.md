@@ -42,6 +42,10 @@ What carries out a Run — the one place the Supervisor launches Claude Code fro
 **Attempt**:
 One Run of a ticket. A ticket gets a bounded number of attempts — its **attempt budget**, two by default — and each attempt after the first receives the previous attempt's failure feedback. A budget belongs to a ticket, not to a run: spending one ticket's whole budget costs the next ticket nothing.
 
+**Spend**:
+What a Run reported it cost — money, turns and elapsed time. It belongs to the Attempt it was spent on, the Run's own and its Review's together, since a review is a Run and spends the same quota; and a run's spend is its every Attempt's added up, the ones that failed and the ones a usage limit cut short included, because the quota went on those too. The three figures stand or fall one at a time, and a figure no Run reported is missing rather than nought: nought reads as work that was free, and no work is free.
+_Avoid_: cost (that is one of the three figures), usage, budget (that is the attempt budget)
+
 **Dashboard**:
 The Supervisor's own web page, served by the Supervisor itself — where a run is watched and where it is driven. It shows what is happening and what happened, and it carries the same controls the API does; it decides nothing of its own, and every control it gives is one the API would answer identically.
 _Avoid_: UI, front-end, web app

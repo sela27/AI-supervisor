@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
+import { spendOf, spentAltogether, type Spend } from "./runner/spend.js";
 import type { AttemptReview, ReviewVerdict } from "./verification/review.js";
 
 /**
@@ -22,6 +23,12 @@ export interface AttemptRecord {
    * given and a review that was never asked for must not read alike.
    */
   review: AttemptReview | null;
+  /**
+   * What the Attempt spent, the Run it was and the review it was put through
+   * together. Nothing where nothing was reported: an Attempt with no figures
+   * against it is one nobody priced, never one that was free.
+   */
+  spend: Spend | null;
 }
 
 export interface StoredAttempt extends AttemptRecord {
@@ -43,6 +50,13 @@ export interface Storage {
   recordAttempt(attempt: AttemptRecord): void;
   /** Every Attempt one ticket got in one run, oldest first. */
   attemptsFor(runId: string, ticketId: string): StoredAttempt[];
+  /**
+   * What a whole run has spent, every Attempt of it added up. Added up here
+   * rather than tallied as the night goes, so what the run reports cannot drift
+   * from what is filed under it and a Supervisor that restarted has nothing to
+   * remember. Nothing where no Attempt of it reported a figure.
+   */
+  spentOn(runId: string): Spend | null;
   /**
    * Writes a run down as it stands, over whatever was written of it before. A run
    * is only ever worth its latest state: what came before it is history the
@@ -111,6 +125,21 @@ const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE attempts ADD COLUMN review_reasoning TEXT;
     `,
   },
+  {
+    // What each Attempt spent. A column apiece rather than the one blob the runs
+    // table gets: these are three figures that will not grow into a fourth, and
+    // the only interesting question about them — what a whole night cost — is a
+    // sum across rows, which a blob could not answer.
+    //
+    // Null in all three for every Attempt written before this, and for every one
+    // whose Run reported no figures. Nought would have been a lie in both cases.
+    version: 4,
+    up: `
+      ALTER TABLE attempts ADD COLUMN cost_usd REAL;
+      ALTER TABLE attempts ADD COLUMN turns INTEGER;
+      ALTER TABLE attempts ADD COLUMN duration_ms INTEGER;
+    `,
+  },
 ];
 
 interface AttemptRow {
@@ -121,7 +150,13 @@ interface AttemptRow {
   recorded_at: string;
   review_verdict: string | null;
   review_reasoning: string | null;
+  cost_usd: number | null;
+  turns: number | null;
+  duration_ms: number | null;
 }
+
+/** What the figures come back as, added up or a row at a time. */
+type SpendRow = Pick<AttemptRow, "cost_usd" | "turns" | "duration_ms">;
 
 export function openStorage(file: string): Storage {
   const db = new DatabaseSync(file);
@@ -141,8 +176,8 @@ export function openStorage(file: string): Storage {
       db.prepare(
         `INSERT INTO attempts
            (run_id, ticket_id, outcome, failure, output, recorded_at,
-            review_verdict, review_reasoning)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            review_verdict, review_reasoning, cost_usd, turns, duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         attempt.runId,
         attempt.ticketId,
@@ -152,6 +187,9 @@ export function openStorage(file: string): Storage {
         new Date().toISOString(),
         attempt.review?.verdict ?? null,
         attempt.review?.reasoning ?? null,
+        attempt.spend?.costUsd ?? null,
+        attempt.spend?.turns ?? null,
+        attempt.spend?.durationMs ?? null,
       );
     },
 
@@ -159,7 +197,7 @@ export function openStorage(file: string): Storage {
       const rows = db
         .prepare(
           `SELECT ticket_id, outcome, failure, output, recorded_at,
-                  review_verdict, review_reasoning
+                  review_verdict, review_reasoning, cost_usd, turns, duration_ms
            FROM attempts WHERE run_id = ? AND ticket_id = ? ORDER BY id`,
         )
         .all(runId, ticketId) as unknown as AttemptRow[];
@@ -172,7 +210,20 @@ export function openStorage(file: string): Storage {
         output: row.output,
         recordedAt: row.recorded_at,
         review: reviewOf(row),
+        spend: spentIn(row) ?? null,
       }));
+    },
+
+    spentOn: (runId) => {
+      // Added up here rather than by SQL, so that what a whole night spent and
+      // what one Attempt spent are added the same way, in the one place that
+      // knows a figure nobody reported is not a nought. It is a night's worth of
+      // rows — tens of them — so the live watch can ask as often as it looks.
+      const rows = db
+        .prepare(`SELECT cost_usd, turns, duration_ms FROM attempts WHERE run_id = ?`)
+        .all(runId) as unknown as SpendRow[];
+
+      return spentAltogether(rows.map(spentIn)) ?? null;
     },
 
     saveRun: (runId, record) => {
@@ -212,6 +263,15 @@ function reviewOf(row: AttemptRow): AttemptReview | null {
 
   const verdict: ReviewVerdict = row.review_verdict === "approved" ? "approved" : "rejected";
   return { verdict, reasoning: row.review_reasoning ?? "" };
+}
+
+/** What the columns say was spent, or nothing where they say nothing at all. */
+function spentIn(row: SpendRow): Spend | undefined {
+  return spendOf({
+    costUsd: row.cost_usd,
+    turns: row.turns,
+    durationMs: row.duration_ms,
+  });
 }
 
 /** Anything the column holds that this build does not recognise did not succeed. */

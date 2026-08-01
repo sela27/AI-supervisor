@@ -1,3 +1,4 @@
+import type { Spend } from "../runner/spend.js";
 import type { QueueEngine, QueueInstruction, QueueRunState, TicketRun } from "./engine.js";
 
 /**
@@ -19,6 +20,12 @@ export interface QueueView {
   stoppedBy: string | null;
   /** Why Checkpoints are not reaching the remote, while they are not. */
   pushFailure: string | null;
+  /**
+   * What the run has spent, its every Attempt added up. Nothing at all where no
+   * Run of it reported a figure — the price of a night nobody priced is unknown,
+   * not nought.
+   */
+  spent: Spend | null;
 }
 
 /** The Attempt being watched: whose it is, and what it has printed so far. */
@@ -28,8 +35,9 @@ export interface LiveOutputView {
 }
 
 export function currentQueue(engine: QueueEngine): QueueView {
-  return (
-    engine.current() ?? {
+  const run = engine.current();
+  if (!run) {
+    return {
       id: null,
       branch: null,
       state: "idle",
@@ -39,8 +47,13 @@ export function currentQueue(engine: QueueEngine): QueueView {
       error: null,
       stoppedBy: null,
       pushFailure: null,
-    }
-  );
+      spent: null,
+    };
+  }
+
+  // Asked for beside the run rather than held on it: what a run has spent is the
+  // Attempts filed under it added up, and nothing else is entitled to say.
+  return { ...run, spent: engine.spentSoFar() };
 }
 
 /**
