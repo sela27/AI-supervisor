@@ -61,6 +61,24 @@ export function isRepositoryName(value: string): boolean {
   return /^[^/\s]+\/[^/\s]+$/.test(value.trim());
 }
 
+/**
+ * A selection as it was written down somewhere, read back. Only the shape is
+ * answered for: what a half-written source should be said to whoever wrote it is
+ * the business of whoever is reading their words, not of this.
+ */
+export function asSourceSelection(value: unknown): SourceSelection | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const named = value as { type?: unknown; directory?: unknown; repository?: unknown };
+
+  if (named.type === "local" && typeof named.directory === "string" && named.directory !== "") {
+    return { type: "local", directory: named.directory };
+  }
+  if (named.type === "github" && typeof named.repository === "string" && named.repository !== "") {
+    return { type: "github", repository: named.repository };
+  }
+  return undefined;
+}
+
 /** Opens the source a queue asked for. One per run, and only for that run. */
 export function openTicketSource(selection: SourceSelection, gh: GhCommand): TicketSource {
   return selection.type === "local"

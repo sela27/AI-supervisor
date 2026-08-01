@@ -20,6 +20,8 @@ export class GitError extends Error {
  */
 export interface GitRepository {
   headCommit(): Promise<string>;
+  /** The branch the project is standing on, which a run's own must not be left off. */
+  currentBranch(): Promise<string>;
   /** True when the working tree holds anything not yet committed. */
   isDirty(): Promise<boolean>;
   /** Whether the name is taken — here or, as far as this clone knows, on the remote. */
@@ -60,6 +62,7 @@ export async function openRepository(directory: string): Promise<GitRepository> 
 
   return {
     headCommit,
+    currentBranch: () => git("rev-parse", "--abbrev-ref", "HEAD"),
     isDirty,
     branchExists: async (name) => {
       // A name already taken on the remote is taken: the branch would be created

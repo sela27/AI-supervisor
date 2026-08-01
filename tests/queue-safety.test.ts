@@ -7,6 +7,7 @@ import {
   control,
   requestControl,
   requestStart,
+  settle,
   startRun,
   stateOf,
   ticketControl,
@@ -50,11 +51,6 @@ function independentTickets(count: number): Record<string, string> {
     files[`${id}-ticket.md`] = ticketFile({ title: `${id} — Ticket ${number}` });
   }
   return files;
-}
-
-/** Long enough that a run about to do the wrong thing would have done it by now. */
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 100));
 }
 
 /** The queue once the run has ended, however it ended. */

@@ -204,6 +204,11 @@ async function poll<T>(
   }
 }
 
+/** Long enough that a run about to do the wrong thing would have done it by now. */
+export function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 100));
+}
+
 export function ticketOf(queue: QueueBody, id: string): QueueBody["tickets"][number] | undefined {
   return queue.tickets.find((ticket) => ticket.id === id);
 }

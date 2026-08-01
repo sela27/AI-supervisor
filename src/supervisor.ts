@@ -14,6 +14,7 @@ import type { Runner } from "./runner/runner.js";
 import { unavailableRunner } from "./runner/unavailable.js";
 import { openStorage } from "./storage.js";
 import { ghCli, type GhCommand } from "./tickets/gh.js";
+import { openTicketSource } from "./tickets/source.js";
 
 export interface SupervisorOptions {
   /** Everything the instance was configured with, file and environment together. */
@@ -54,8 +55,10 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   mkdirSync(dataDir, { recursive: true });
 
   const storage = openStorage(join(dataDir, DATABASE_FILENAME));
+  const gh = options.gh ?? ghCli();
   const engine = createQueueEngine({
     runner: options.runner ?? unavailableRunner(),
+    openSource: (selection) => openTicketSource(selection, gh),
     storage,
     clock: options.clock ?? systemClock(),
     // Whether an Event is worth telling anybody about is the settings' business
@@ -71,11 +74,14 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
     storage,
     engine,
     defaults: config.defaults,
-    gh: options.gh ?? ghCli(),
+    gh,
     logger: options.logger,
   });
 
   try {
+    // Before the first request can be answered, so that whatever this instance
+    // says about its queue is the truth from the moment it says anything at all.
+    await engine.recover();
     await app.listen({ port: config.port, host: config.host });
   } catch (error) {
     storage.close();
@@ -85,6 +91,9 @@ export async function startSupervisor(options: SupervisorOptions): Promise<Runni
   return {
     url: resolveUrl(app.addresses()),
     stop: async () => {
+      // The run first: it is the one thing here that would go on writing to
+      // storage after storage had been closed under it.
+      engine.shutDown();
       await app.close();
       storage.close();
     },

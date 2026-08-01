@@ -4,8 +4,8 @@ import type { EventSink, SupervisorEvent } from "../events.js";
 import { GitError, openRepository, type GitRepository } from "../git/repository.js";
 import type { RunOutcome, Runner, SettledRun } from "../runner/runner.js";
 import type { AttemptRecord, Storage } from "../storage.js";
-import type { TicketSource } from "../tickets/source.js";
-import type { Ticket } from "../tickets/ticket.js";
+import type { SourceSelection, TicketSource } from "../tickets/source.js";
+import { isDone, type Ticket } from "../tickets/ticket.js";
 import { verify } from "../verification/verifier.js";
 import { downstreamOf } from "./dependents.js";
 import type { QueueEdit } from "./edit.js";
@@ -17,6 +17,7 @@ import {
 } from "./errors.js";
 import { isLongWait, nextLookAt } from "./limit-wait.js";
 import { previewQueue } from "./preview.js";
+import { readRunRecord, type RunRecord } from "./record.js";
 import { runsUntil, safetyStopReached, type RunSoFar, type SafetyStops } from "./safety.js";
 
 /**
@@ -106,8 +107,13 @@ export interface Project {
 }
 
 export interface QueueRunRequest {
-  /** The one Ticket Source this queue is discovered from and written back to. */
-  source: TicketSource;
+  /**
+   * The one Ticket Source this queue is discovered from and written back to —
+   * named rather than handed over, so that what a run was reading is something
+   * the run can be written down with and opened again by a Supervisor that has
+   * restarted since.
+   */
+  source: SourceSelection;
   project: Project;
   /** What the user left out of the Queue, and the order they want it run in. */
   edit: QueueEdit;
@@ -122,6 +128,19 @@ export interface QueueRunRequest {
 export interface QueueEngine {
   /** Creates the run's branch and starts executing; returns as soon as it is under way. */
   start(request: QueueRunRequest): Promise<QueueRun>;
+  /**
+   * Works out what the Supervisor was in the middle of when it last went down,
+   * and picks it up. Called once, before anything else can start a run: a run
+   * that was under way carries on, and one that had ended is still the run this
+   * instance reports and holds the Attempt logs of.
+   */
+  recover(): Promise<void>;
+  /**
+   * The Supervisor going down. The run stops where it stands without being ended:
+   * what it was doing is already written down, and the next Supervisor to start on
+   * this data directory is the one that picks it up.
+   */
+  shutDown(): void;
   /** The run in progress, or the last one that finished. */
   current(): QueueRun | undefined;
   /**
@@ -201,8 +220,13 @@ interface Wait {
   told: WaitEnding | undefined;
 }
 
-interface RunContext extends QueueRunRequest {
+interface RunContext {
   run: QueueRun;
+  /** Which source the run reads and writes back to, in the form it is written down in. */
+  selection: SourceSelection;
+  /** That same source, opened. */
+  source: TicketSource;
+  project: Project;
   repository: GitRepository;
   runner: Runner;
   storage: Storage;
@@ -219,6 +243,11 @@ interface RunContext extends QueueRunRequest {
   waiting: Wait | undefined;
   /** The limit the run is sitting through, while it is sitting through one. */
   limit: LimitSpell | undefined;
+  /**
+   * Whether the Supervisor is on its way out. The loop reads it wherever it could
+   * otherwise carry on, so a run neither works nor ends after the lights go out.
+   */
+  goingDown: boolean;
   /** How many Attempts a ticket may spend before the run gives up on it. */
   attemptBudget: number;
   /** How far this run may go on its own before it gives up and leaves the rest. */
@@ -249,6 +278,8 @@ interface RunContext extends QueueRunRequest {
 
 export interface QueueEngineDependencies {
   runner: Runner;
+  /** Opens the Ticket Source a run named — at its start, and again after a restart. */
+  openSource: (selection: SourceSelection) => TicketSource;
   /** Where Attempt logs are kept — out of the repository the failure path resets. */
   storage: Storage;
   /** Time, which a limit wait is made of. Tests move it by hand. */
@@ -277,9 +308,10 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
   let starting = false;
 
   async function begin(request: QueueRunRequest): Promise<QueueRun> {
+    const source = dependencies.openSource(request.source);
     // The user's edit is carried out before anything is created, so an impossible
     // queue is refused rather than started and then found to be stuck.
-    const preview = previewQueue(await request.source.discover(), request.edit);
+    const preview = previewQueue(await source.discover(), request.edit);
     const repository = await openRepository(request.project.directory);
     await refuseUncommitted(repository, request.project.directory);
 
@@ -317,8 +349,10 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
     };
 
     context = {
-      ...request,
       run: started,
+      selection: request.source,
+      source,
+      project: request.project,
       repository,
       runner: dependencies.runner,
       storage: dependencies.storage,
@@ -328,6 +362,7 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       live,
       waiting: undefined,
       limit: undefined,
+      goingDown: false,
       attemptBudget: dependencies.attemptBudget,
       safety: dependencies.safety,
       startAt: request.startAt,
@@ -339,9 +374,99 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
     // Said before a single ticket is attempted: a queue holding work nothing in it
     // could ever release should say so while the user is still looking at it.
     skipDependents(context);
+    // Written down before it is under way, so a Supervisor that goes down during
+    // the very first Attempt still knows there was a night to pick up.
+    remember(context);
     void execute(context);
 
     return snapshot(started);
+  }
+
+  /**
+   * Picks up whatever the last Supervisor on this data directory was in the middle
+   * of. Everything it needs is either written down or in the Ticket Source, which
+   * is still the one that says what is finished — a ticket somebody closed by hand
+   * overnight is done, whatever this run last thought.
+   */
+  async function pickUpWhereItWasLeft(): Promise<void> {
+    const record = readRunRecord(dependencies.storage.lastRun());
+    if (!record) return;
+
+    let repository: GitRepository;
+    try {
+      repository = await openRepository(record.project.directory);
+    } catch {
+      // No project to pick anything up in. The Attempt logs are still on the disk
+      // and the Ticket Source still holds every finished ticket; what is missing
+      // is the repository, which is a bigger problem than a night not continued.
+      return;
+    }
+
+    const resumed: RunContext = {
+      run: record.run,
+      selection: record.source,
+      source: dependencies.openSource(record.source),
+      project: record.project,
+      repository,
+      runner: dependencies.runner,
+      storage: dependencies.storage,
+      clock: dependencies.clock,
+      onEvent: dependencies.onEvent,
+      queued: [],
+      live,
+      waiting: undefined,
+      limit: limitSpell(record),
+      goingDown: false,
+      attemptBudget: dependencies.attemptBudget,
+      safety: dependencies.safety,
+      startAt: record.run.state === "armed" ? asMoment(record.run.resumeAt) : undefined,
+      startedAt: asMoment(record.startedAt),
+      ticketsRun: record.ticketsRun,
+      failuresInARow: record.failuresInARow,
+      restorePoint: record.restorePoint,
+    };
+    context = resumed;
+    // A run that has ended is not one to carry on with, but it is still the run
+    // this instance reports and holds the Attempt logs of — and a failed ticket of
+    // it is still one the user can give another go, which needs its queue back.
+    const underWay = isUnderWay(resumed.run.state);
+    // An armed run has not begun. The project is the user's until its hour comes,
+    // and their evening's work is not the Supervisor's to throw away — it is
+    // checked at the hour, as it always was, and refused rather than reset.
+    const hasBegun = underWay && resumed.run.state !== "armed";
+
+    try {
+      // Before the Ticket Source is asked anything: the dead Attempt may have left
+      // a write-back sitting uncommitted in the project, and a source read before
+      // the reset would answer out of work that is about to be thrown away.
+      if (hasBegun) await returnToTheBranch(resumed);
+      resumed.queued = await rebuildQueue(record, resumed.source, resumed.storage);
+      // The run reports the very entries the queue works on, as it does from the
+      // moment a run is started: two copies would let what the loop does and what
+      // the API says drift apart.
+      resumed.run.tickets = resumed.queued.map((item) => item.entry);
+      // The blocking edges were read again just now, and a ticket may have gained
+      // one that nothing in this queue will ever finish.
+      skipDependents(resumed);
+    } catch (error) {
+      // A run that had already ended is not ended again over a source that would
+      // not answer: what it says about the night stands, and only what could still
+      // be done with it — retrying a ticket — is out of reach until the next start.
+      if (!underWay) return;
+
+      // Said, but deliberately not written down. The run did not fail: this
+      // Supervisor could not pick it up, which is a different thing and often a
+      // thing the user can undo. What is on the disk is left exactly as the last
+      // Supervisor left it, so putting right whatever this was — checking the run's
+      // branch back out, giving the source its network back — and starting again
+      // finds the night where it was.
+      resumed.onEvent(brokeDown(resumed, messageOf(error)));
+      return;
+    }
+
+    // A paused run is where the user left it, and a Supervisor restarting is not
+    // them taking that back. Everything else was under way and goes on being.
+    if (underWay && resumed.run.state !== "paused") void execute(resumed);
   }
 
   /** The run a control is about to act on, or the reason there is nothing to act on. */
@@ -372,12 +497,32 @@ export function createQueueEngine(dependencies: QueueEngineDependencies): QueueE
       }
     },
 
-    pause: () => snapshot(instruct(runToControl(), "pause")),
-    stop: () => snapshot(instruct(runToControl(), "stop")),
-    resume: () => snapshot(resumeRun(runToControl())),
-    retry: (ticketId) => snapshot(retryTicket(runToControl(), ticketId)),
-    skip: (ticketId) => snapshot(skipTicket(runToControl(), ticketId)),
+    recover: pickUpWhereItWasLeft,
+
+    shutDown: () => {
+      if (!context) return;
+      context.goingDown = true;
+      // A run asleep in a wait would otherwise hold the process until Thursday.
+      context.waiting?.wake();
+    },
+
+    pause: () => control(() => instruct(runToControl(), "pause")),
+    stop: () => control(() => instruct(runToControl(), "stop")),
+    resume: () => control(() => resumeRun(runToControl())),
+    retry: (ticketId) => control(() => retryTicket(runToControl(), ticketId)),
+    skip: (ticketId) => control(() => skipTicket(runToControl(), ticketId)),
   };
+
+  /**
+   * One of the run's controls, carried out and then written down. Every control
+   * changes what the run would be picked up as, and one place to say so beats five
+   * that have to remember to.
+   */
+  function control(act: () => QueueRun): QueueRun {
+    const run = act();
+    if (context) remember(context);
+    return snapshot(run);
+  }
 }
 
 /** Whether the run is one the user could still pick up, so not one to start over. */
@@ -596,15 +741,36 @@ function dependentsOf(context: RunContext, ticketId: string): Queued[] {
  * an armed run's own hour is sat out the same way before any of this begins.
  */
 async function execute(context: RunContext): Promise<void> {
-  let brokeDown: string | undefined;
+  const ending = await walkTheQueue(context);
 
+  // The Supervisor going down under the run, rather than the run ending: nothing
+  // is written and nobody is told. Where the run had got to is already on the
+  // disk, and the next Supervisor to start here is the one with something to say.
+  if (context.goingDown) return;
+
+  remember(context);
+  // Said outside the walk on purpose: the run has ended one way or the other, and
+  // telling somebody how must not be able to change which. A run that was paused,
+  // stopped or is still sitting out a limit has not ended, and there is nothing to
+  // say about a night that is not over.
+  if (ending !== undefined) context.onEvent(ending);
+}
+
+/** The walk itself, and the one thing worth telling somebody at the end of it. */
+async function walkTheQueue(context: RunContext): Promise<SupervisorEvent | undefined> {
   try {
-    if (!(await waitForItsHour(context))) return;
+    if (!(await waitForItsHour(context))) return undefined;
     // The night's own clock starts here rather than at the arming: the hours a run
     // spent waiting for the hour it was told are not hours it spent working.
     const startedAt = (context.startedAt ??= context.clock.now());
+    if (!(await pickUpTheLimitWait(context, startedAt))) return undefined;
 
     for (;;) {
+      if (context.goingDown) return undefined;
+      // Written down at every boundary, so a Supervisor that goes down mid-Attempt
+      // is picked up from the end of the last ticket rather than from the start.
+      remember(context);
+
       const next = nextOnFrontier(context.queued);
       // Nothing left to run is a completed queue, whatever was asked of it: there
       // was nothing there to pause or to stop.
@@ -614,7 +780,7 @@ async function execute(context: RunContext): Promise<void> {
       if (asked !== null) {
         context.run.instruction = null;
         context.run.state = asked === "pause" ? "paused" : "stopped";
-        return;
+        return undefined;
       }
 
       // Read at the ticket boundary like everything else that ends a run: the
@@ -622,7 +788,7 @@ async function execute(context: RunContext): Promise<void> {
       const reached = safetyStopReached(context.safety, soFar(context, startedAt));
       if (reached !== undefined) {
         stopForSafety(context, reached);
-        return;
+        return undefined;
       }
 
       try {
@@ -633,27 +799,173 @@ async function execute(context: RunContext): Promise<void> {
         // A usage limit is not a breakdown: nothing is wrong, there is just no
         // quota left to spend, and the one thing that fixes it is time.
         if (!(error instanceof UsageLimitError)) throw error;
-        if (!(await waitOutLimit(error, next, startedAt, context))) return;
+        if (!(await waitOutLimit(error, next, startedAt, context))) return undefined;
       }
     }
+
     context.run.state = "completed";
+    return theNightsOutcome(context);
   } catch (error) {
     // The repository moving under the run, the source going away: this queue did
     // not complete, and nothing it could do by itself would change that.
-    brokeDown = messageOf(error);
-    context.run.error = brokeDown;
-    context.run.state = "failed";
+    return brokeDown(context, messageOf(error));
+  }
+}
+
+/**
+ * Ends the run on something no ticket was to blame for, and says what. The one
+ * ending that is nobody's decision — not the user's, not the queue running out —
+ * so it is the one worth reaching a person who is not looking.
+ */
+function brokeDown(context: RunContext, error: string): SupervisorEvent {
+  context.run.error = error;
+  context.run.state = "failed";
+  return { type: "run-broke-down", runId: context.run.id, error };
+}
+
+/**
+ * Writes the run down as it stands. Called wherever the run reaches a state a
+ * Supervisor could go down in — which is every ticket boundary, every wait, and
+ * every control the user gives.
+ */
+function remember(context: RunContext): void {
+  const record: RunRecord = {
+    run: context.run,
+    queue: context.queued.map(({ ticket, takenOut }) => ({ ticket, takenOut })),
+    source: context.selection,
+    project: context.project,
+    startAt: context.startAt?.toISOString() ?? null,
+    startedAt: context.startedAt?.toISOString() ?? null,
+    ticketsRun: context.ticketsRun,
+    failuresInARow: context.failuresInARow,
+    restorePoint: context.restorePoint,
+    limit:
+      context.limit === undefined
+        ? null
+        : { since: context.limit.since.toISOString(), announced: context.limit.announced },
+  };
+
+  context.storage.saveRun(context.run.id, record);
+}
+
+/**
+ * Moves the point a failed or dead Attempt is thrown back to, and writes it down
+ * on the spot. The one thing here that must never be a moment late: a Supervisor
+ * going down between a Checkpoint being made and its being written down would come
+ * back and reset away the very commit it had just made.
+ */
+function moveRestorePoint(context: RunContext, commit: string): void {
+  context.restorePoint = commit;
+  remember(context);
+}
+
+/**
+ * The Queue as it stood, with the Ticket Source asked about it again. The tickets
+ * are the ones the user approved and in the order they approved them — a queue is
+ * a plan, and a ticket filed since is not part of the plan the night was begun on.
+ *
+ * A ticket the source is still offering is taken fresh: a blocking edge may have
+ * been rewritten, and somebody may have finished the ticket by hand overnight. One
+ * it is no longer offering is taken as it was written down, because that is what
+ * every ticket this run finished looks like — a closed issue is not offered, and
+ * asking the source for the Queue again would lose the whole of the night's work.
+ */
+async function rebuildQueue(
+  record: RunRecord,
+  source: TicketSource,
+  storage: Storage,
+): Promise<Queued[]> {
+  const offered = new Map((await source.discover()).map((ticket) => [ticket.id, ticket]));
+  const entries = new Map(record.run.tickets.map((entry) => [entry.id, entry]));
+
+  return record.queue.flatMap(({ ticket: written, takenOut }) => {
+    const entry = entries.get(written.id);
+    if (!entry) return [];
+
+    const offering = offered.get(written.id);
+    return [
+      {
+        ticket: offering ?? written,
+        takenOut,
+        // A ticket that failed had its failure written to the source as it failed,
+        // so there is something there to take back off it if it is retried.
+        failureRecorded: entry.state === "failed",
+        entry: {
+          ...entry,
+          // Counted from the Attempts themselves rather than from the run's own
+          // tally, which was last written down at the previous ticket boundary.
+          attempts: storage.attemptsFor(record.run.id, entry.id).length,
+          ...afterTheRestart(entry, offering),
+        },
+      },
+    ];
+  });
+}
+
+/**
+ * What one ticket is once the Supervisor has restarted. What this run did to a
+ * ticket is this run's own to remember; everything still to happen is the source's
+ * to say, including a ticket somebody finished by hand overnight.
+ */
+function afterTheRestart(
+  entry: TicketRun,
+  offering: Ticket | undefined,
+): Pick<TicketRun, "state" | "failure"> {
+  if (entry.state === "succeeded" || entry.state === "failed" || entry.state === "skipped") {
+    return { state: entry.state, failure: entry.failure };
   }
 
-  // Outside both, on purpose: the run has ended one way or the other, and telling
-  // somebody how must not be able to change which. A run that was paused, stopped
-  // or is still sitting out a limit returned long before here — none of those has
-  // ended, and there is nothing to say about a night that is not over.
-  context.onEvent(
-    brokeDown === undefined
-      ? theNightsOutcome(context)
-      : { type: "run-broke-down", runId: context.run.id, error: brokeDown },
-  );
+  // A ticket the source has stopped offering and this run never settled is one
+  // nothing here will finish: somebody closed it, took the label off it, or took
+  // it away. Whichever it was, it is not tonight's, and neither is anything that
+  // was waiting on it.
+  if (offering === undefined) {
+    return {
+      state: "skipped",
+      failure: "the Ticket Source stopped offering it, so it was never attempted",
+    };
+  }
+
+  if (isDone(offering)) return { state: "done", failure: null };
+  // An Attempt the restart cut off never ran its course, so it never happened:
+  // the ticket goes back on the Frontier with nothing held against it.
+  return { state: "pending", failure: null };
+}
+
+/**
+ * Makes the project fit to be worked in again: on the run's own branch, and back
+ * at the last Checkpoint. A dead Attempt's residue goes the way a refused one's
+ * does — it is the same residue, and the same reason for throwing it away.
+ *
+ * A project standing on some other branch is not one to reset: somebody checked it
+ * out while the Supervisor was down, and their work is not the run's to throw away.
+ * The run ends there and says so, and checking the branch back out is all it takes
+ * to have it picked up on the next start.
+ */
+async function returnToTheBranch(context: RunContext): Promise<void> {
+  const { branch } = context.run;
+  const standing = await context.repository.currentBranch();
+
+  if (standing !== branch) {
+    throw new GitError(
+      `${context.project.directory} is on ${standing} rather than the run's own branch ` +
+        `${branch}, so the run was left where it was — check ${branch} out to have it picked up`,
+    );
+  }
+
+  await context.repository.resetTo(context.restorePoint);
+}
+
+/** A moment written down, or nothing where nothing was written. */
+function asMoment(written: string | null): Date | undefined {
+  if (written === null) return undefined;
+  const at = new Date(written);
+  return Number.isNaN(at.getTime()) ? undefined : at;
+}
+
+function limitSpell(record: RunRecord): LimitSpell | undefined {
+  const since = asMoment(record.limit?.since ?? null);
+  return since === undefined ? undefined : { since, announced: record.limit?.announced ?? false };
 }
 
 /**
@@ -690,16 +1002,45 @@ async function waitForItsHour(context: RunContext): Promise<boolean> {
   // run picked up again afterwards is never armed a second time.
   context.startAt = undefined;
 
-  const told = await sleepThrough(context, startAt);
-  if (told === "paused" || told === "stopped") return false;
-
-  context.run.state = "running";
-  context.run.resumeAt = null;
+  if (!(await waitUntilItsHour(context, startAt))) return false;
 
   // Hours went by between the arming and the hour, and the project was the user's
   // for every one of them. Work left lying about at bedtime would otherwise be
   // swept into the first Checkpoint as if a Run had written it.
   await refuseUncommitted(context.repository, context.project.directory);
+  return true;
+}
+
+/**
+ * Sits out the rest of a usage-limit wait the Supervisor went down in the middle
+ * of. The quota is no more back than it was, so the run goes back to waiting
+ * rather than back to work: attempting now would spend the ticket's turn finding
+ * out what the run already knows.
+ */
+async function pickUpTheLimitWait(context: RunContext, startedAt: Date): Promise<boolean> {
+  const { run } = context;
+  if (run.state !== "paused-on-limit" || run.resumeAt === null) return true;
+
+  const until = soonest(new Date(run.resumeAt), runsUntil(context.safety, startedAt));
+  return waitUntilItsHour(context, until);
+}
+
+/**
+ * Waits for a moment to come round with the run's controls still live, and answers
+ * whether the run should carry on. Waiting is all this does: what the run was
+ * waiting for is the caller's to know, and the two things a run waits for — its
+ * own hour, and the quota's — end the same way when they end.
+ */
+async function waitUntilItsHour(context: RunContext, until: Date): Promise<boolean> {
+  const told = await sleepThrough(context, until);
+  if (context.goingDown) return false;
+  // Whatever the clock says, the user's word is what the run does. A resume is
+  // them agreeing with the clock early, so only the other two end the run here.
+  if (told === "paused" || told === "stopped") return false;
+
+  context.run.resumeAt = null;
+  context.run.state = "running";
+  context.run.error = null;
   return true;
 }
 
@@ -711,6 +1052,9 @@ async function sleepThrough(context: RunContext, until: Date): Promise<WaitEndin
   const woken = new AbortController();
   const wait: Wait = { wake: () => woken.abort(), told: undefined };
   context.waiting = wait;
+  // Written down before the sleep rather than after it: the state a run waits in
+  // is precisely the state a Supervisor going down mid-wait has to be picked up in.
+  remember(context);
 
   try {
     await context.clock.sleepUntil(until, woken.signal);
@@ -787,19 +1131,11 @@ async function waitOutLimit(
   // loop reads the Safety stops again, and stops the run if that is what they
   // say. What the run reports meanwhile is still the limit's own hour, because
   // that is the hour it means to try at.
-  const told = await sleepThrough(context, soonest(resumeAt, runsUntil(context.safety, startedAt)));
-
-  // Whatever the clock says, the user's word is what the run does. A resume is
-  // them agreeing with the clock early, so only the other two end the run here.
-  if (told === "paused" || told === "stopped") return false;
-
-  run.resumeAt = null;
-  run.state = "running";
-  run.error = null;
-  // The spell of limits deliberately survives: this wait is over, but if the
-  // quota is still gone the next one is more of the same wait, and how long the
-  // whole of it has run is the only thing that says it is a long one.
-  return true;
+  //
+  // The spell of limits deliberately survives the wait: if the quota is still
+  // gone the next wait is more of the same one, and how long the whole of it has
+  // run is the only thing that says it is a long one.
+  return waitUntilItsHour(context, soonest(resumeAt, runsUntil(context.safety, startedAt)));
 }
 
 /** The earlier of two moments, one of which may not exist at all. */
@@ -881,7 +1217,7 @@ async function clearEarlierFailure(queued: Queued, context: RunContext): Promise
   // Ticket files kept outside the repository leave nothing to commit, and the
   // restore point simply stands.
   const recorded = await context.repository.commitEverything(`Retrying: ${queued.ticket.title}`);
-  context.restorePoint = recorded ?? context.restorePoint;
+  moveRestorePoint(context, recorded ?? context.restorePoint);
 }
 
 /**
@@ -956,8 +1292,8 @@ async function checkpoint(queued: Queued, context: RunContext): Promise<void> {
   // commit; there the Run's own last commit is what ends the ticket.
   const swept = await context.repository.commitEverything(`Checkpoint: ${ticket.title}`);
   entry.checkpoint = swept ?? (await context.repository.headCommit());
-  context.restorePoint = entry.checkpoint;
   entry.state = "succeeded";
+  moveRestorePoint(context, entry.checkpoint);
 
   // Last, once the ticket has finished being a ticket: the Checkpoint goes out
   // before the next ticket is attempted, so the remote is never more than one
@@ -1097,7 +1433,7 @@ async function failTicket(queued: Queued, reason: string, context: RunContext): 
   // and the next reset cannot rewind this record away. A source that keeps its
   // tickets elsewhere leaves nothing to commit, and the restore point stands.
   const recorded = await context.repository.commitEverything(`Failed: ${queued.ticket.title}`);
-  context.restorePoint = recorded ?? context.restorePoint;
+  moveRestorePoint(context, recorded ?? context.restorePoint);
 
   skipDependents(context);
 }

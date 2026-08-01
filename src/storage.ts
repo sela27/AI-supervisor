@@ -35,6 +35,21 @@ export interface Storage {
   recordAttempt(attempt: AttemptRecord): void;
   /** Every Attempt one ticket got in one run, oldest first. */
   attemptsFor(runId: string, ticketId: string): StoredAttempt[];
+  /**
+   * Writes a run down as it stands, over whatever was written of it before. A run
+   * is only ever worth its latest state: what came before it is history the
+   * Attempt logs already hold.
+   *
+   * What a run record holds is the queue's own business, here and back again: this
+   * stores what it is given and answers with what it stored.
+   */
+  saveRun(runId: string, record: unknown): void;
+  /**
+   * The run last written down, for a Supervisor working out what it was in the
+   * middle of. What is on the disk was written by some build of the Supervisor,
+   * not necessarily this one, so reading it as a run is the queue's to do.
+   */
+  lastRun(): unknown;
   close(): void;
 }
 
@@ -61,6 +76,20 @@ const MIGRATIONS: readonly Migration[] = [
         recorded_at TEXT NOT NULL
       );
       CREATE INDEX attempts_by_ticket ON attempts (run_id, ticket_id, id);
+    `,
+  },
+  {
+    // One column for the whole run rather than a column per field: the record is
+    // written at every ticket boundary, read whole by exactly one reader, and its
+    // shape is the queue's own. Spelling it out here would buy queries nobody
+    // makes, at the price of a migration every time the queue learns a new field.
+    version: 2,
+    up: `
+      CREATE TABLE runs (
+        id         TEXT PRIMARY KEY,
+        updated_at TEXT NOT NULL,
+        record     TEXT NOT NULL
+      );
     `,
   },
 ];
@@ -119,8 +148,31 @@ export function openStorage(file: string): Storage {
       }));
     },
 
+    saveRun: (runId, record) => {
+      db.prepare(
+        `INSERT INTO runs (id, updated_at, record) VALUES (?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at, record = excluded.record`,
+      ).run(runId, new Date().toISOString(), JSON.stringify(record));
+    },
+
+    lastRun: () => {
+      const row = db
+        .prepare("SELECT record FROM runs ORDER BY updated_at DESC, id DESC LIMIT 1")
+        .get() as { record: string } | undefined;
+      return row === undefined ? undefined : parsed(row.record);
+    },
+
     close: () => db.close(),
   };
+}
+
+/** A record that will not even parse is one there is nothing to be read out of. */
+function parsed(record: string): unknown {
+  try {
+    return JSON.parse(record);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Anything the column holds that this build does not recognise did not succeed. */

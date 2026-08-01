@@ -533,6 +533,47 @@ Resuming by hand means "try now" rather than at the hour Claude named — useful
 better than it did. Pausing or stopping during a wait takes effect on the spot: there is no
 Attempt under way, so there is no ticket boundary left to reach.
 
+## When the Supervisor restarts
+
+A container that is restarted, updated or killed mid-night does not lose the night. On
+starting, the Supervisor reads back the run it — or the Supervisor before it — was in the
+middle of, and carries on: **a run that was working goes back to work, one that was waiting
+out a limit goes back to waiting for the same hour, one armed for later is still armed for
+that hour, and one you had paused stays paused.** Nothing is asked of you, and the run keeps
+its id, its branch and everything it had already finished.
+
+The Queue is the one you approved, tickets and order both: it is written down with the run,
+so a ticket filed since the night began is not swept into it — and a ticket the night has
+already closed is not lost from it either, which asking the source for the queue again would
+do. What the source is asked is what has finished since: a ticket you closed by hand
+overnight is done and is not run again, and one the source has stopped offering at all is
+taken out of the queue rather than attempted into thin air.
+
+The Attempt the restart cut off never happened. Whatever it had left in the project — its
+commits, its edits, the files it created — is thrown back to the last Checkpoint exactly as a
+refused Attempt's would be, the ticket goes back on the Frontier, and **nothing is held
+against it**: the interrupted Attempt costs it nothing out of its attempt budget. Every
+Attempt from before the restart is still on file, log and all, under
+`/api/queue/tickets/<id>/attempts` — and a ticket that failed before the restart can still be
+retried after it. A run that had not begun — one armed for later — is a different matter: its
+project is still yours until its hour, so nothing in it is reset, and whatever you leave
+uncommitted is checked at the hour as it always was.
+
+One thing will stop a run being picked up: **the project standing on some other branch.**
+Picking the run up means resetting its branch back to the last Checkpoint, and a branch you
+checked out while the Supervisor was down is not the Supervisor's to reset. Nothing in the
+project is touched, and you are [told](#being-told-when-something-matters) that the run broke
+down, naming the branch it found and the one it wanted.
+
+A run that could not be picked up is **not written off**, though — it did not fail, it was
+merely not resumed, and that is usually something you can undo. The API reports it `failed`,
+because this Supervisor is certainly not running it; but what is on the disk is left exactly
+as the last Supervisor left it. Check the run's branch back out (or give the Ticket Source
+its network back) and start the Supervisor again, and the night is where you left it.
+
+The run's own time — `maxRuntimeMinutes` — is measured from when it first began working, not
+from the restart, so a night cannot win itself a fresh allowance by being restarted.
+
 ## When an attempt is refused
 
 A refused Attempt is thrown all the way back to the last Checkpoint the moment it is
@@ -606,6 +647,12 @@ Three things cannot be reached through that seam and are covered directly instea
 instance's settings, which happens before there is a service to ask; the production Runner,
 against recorded Runs; and the production Notifier, which is what every other test stands in
 for — that one posts to a real HTTP server on a port of its own.
+
+The restart tests boot two Supervisors in turn onto one data directory, which is what a
+restart is. The kill is modelled rather than performed: the Supervisor is shut down while the
+Run it was driving never answers at all, which is what a process being killed mid-Attempt
+leaves behind. Killing the test process itself would take the fake Runner with it, and a real
+Claude Code Run is the one thing the suite will not launch.
 
 ## Building
 

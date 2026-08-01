@@ -34,7 +34,7 @@ export function buildApp({
 
   registerDashboardRoutes(app, engine);
   registerQueuePreviewRoute(app, { defaults, gh });
-  registerQueueRunRoutes(app, { engine, storage, defaults, gh });
+  registerQueueRunRoutes(app, { engine, storage, defaults });
 
   return app;
 }

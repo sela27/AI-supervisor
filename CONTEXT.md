@@ -80,6 +80,10 @@ The queue state entered when a usage limit is detected. A limit-interrupted Atte
 A bound the instance was given in advance on how far one run may go on its own: how many tickets it may run, how long it may go on for, and how many tickets may fail one after another. Reaching one leaves the run Stopped, at a ticket boundary like any other ending, with the stop that ended it said in words. Nothing about it is a failure and nothing about it is the subscription's — a usage limit is somebody else's decision that the run waits out, and a Safety stop is the user's own decision that the run obeys.
 _Avoid_: limit (that is the usage limit), quota, guard, timeout
 
+**Recovery**:
+What a Supervisor does on starting with a night the Supervisor before it was in the middle of: it throws away whatever the interrupted Attempt left, carries on from the last Checkpoint, and asks the Ticket Source what has finished since. Nobody asks for a recovery and nobody is meant to notice one — a run that was working goes back to work, one that was waiting goes back to waiting, and one the user had paused stays paused. The Attempt the restart cut off never happened: it is not held against its ticket, and it costs it nothing out of its attempt budget. A run that has not begun is left alone entirely, project and all: an Armed run's project is still the user's until its hour. A run that cannot be picked up has not failed — it has not been resumed, which is a different thing and usually the user's to undo, so nothing is written off and the next start tries again.
+_Avoid_: resume (that is the user's control), restart (that is the Supervisor's, not the run's), replay
+
 **Probe**:
 An Attempt made to find out whether the usage limit has lifted. A limit that named no reset time leaves nothing to wait for in particular, so the run goes and asks every so often. There is no cheaper way to ask than to try the ticket — and trying costs the ticket nothing, since a limit-interrupted Attempt is discarded and never held against it.
 

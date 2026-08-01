@@ -9,6 +9,7 @@ import {
   control,
   createGate,
   readAttempts,
+  settle,
   startRun,
   stateOf,
   ticketOf,
@@ -341,8 +342,3 @@ test("the interrupted Attempt's log is kept, marked as the limit rather than a f
   // The reset threw the working tree away; the log is what is left of the Attempt.
   expect(attempts[0]?.output).toContain("the quota ran out");
 });
-
-/** Long enough that a run about to do the wrong thing would have done it by now. */
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 100));
-}

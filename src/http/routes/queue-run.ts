@@ -5,8 +5,6 @@ import { asRecord } from "../../json.js";
 import type { Project, QueueEngine, QueueRun } from "../../queue/engine.js";
 import { currentQueue, type LiveOutputView } from "../../queue/view.js";
 import type { Storage } from "../../storage.js";
-import type { GhCommand } from "../../tickets/gh.js";
-import { openTicketSource } from "../../tickets/source.js";
 import { isVerification } from "../../verification/verifier.js";
 import { badRequest, sendError, toErrorResponse } from "../errors.js";
 import {
@@ -25,8 +23,6 @@ export interface QueueRunDependencies {
   storage: Storage;
   /** What the instance was configured with, for whatever a start request leaves out. */
   defaults: QueueRunDefaults;
-  /** How the Supervisor talks to GitHub, for a queue whose tickets live there. */
-  gh: GhCommand;
 }
 
 /**
@@ -36,7 +32,7 @@ export interface QueueRunDependencies {
  */
 export function registerQueueRunRoutes(
   app: FastifyInstance,
-  { engine, storage, defaults, gh }: QueueRunDependencies,
+  { engine, storage, defaults }: QueueRunDependencies,
 ): void {
   app.get("/api/queue", async () => currentQueue(engine));
 
@@ -75,7 +71,7 @@ export function registerQueueRunRoutes(
 
     try {
       const run = await engine.start({
-        source: openTicketSource(source.value, gh),
+        source: source.value,
         project: project.value,
         edit: edit.value,
         ...(startAt.value === undefined ? {} : { startAt: startAt.value }),
