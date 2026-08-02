@@ -126,17 +126,29 @@ test("the environment overrides the file, so one container can differ from its i
 });
 
 test("an environment variable set to nothing is not a setting at all", async () => {
-  const cwd = await instanceWith({ host: "127.0.0.1", logLevel: "debug", port: 8080 });
+  const cwd = await instanceWith({
+    host: "127.0.0.1",
+    logLevel: "debug",
+    port: 8080,
+    runner: { model: "claude-opus-5" },
+  });
 
-  // A compose file with a blank value in it must not beat a real setting.
+  // A compose file with a blank value in it must not beat a real setting — nor
+  // read as a setting of its own, which for the model would refuse to start.
   const config = loadSupervisorConfig({
     cwd,
-    env: { SUPERVISOR_HOST: "", SUPERVISOR_LOG_LEVEL: "   ", SUPERVISOR_PORT: "" },
+    env: {
+      SUPERVISOR_HOST: "",
+      SUPERVISOR_LOG_LEVEL: "   ",
+      SUPERVISOR_PORT: "",
+      SUPERVISOR_MODEL: "  ",
+    },
   });
 
   expect(config.host).toBe("127.0.0.1");
   expect(config.logLevel).toBe("debug");
   expect(config.port).toBe(8080);
+  expect(config.runner.model).toBe("claude-opus-5");
 });
 
 test("a config file the instance was pointed at explicitly has to be there", async () => {
@@ -175,6 +187,43 @@ test("a setting of the wrong shape is refused at startup, not at the first run",
 
   const badSection = await instanceWith({ project: "./app" });
   expect(() => loadSupervisorConfig({ cwd: badSection, env: {} })).toThrow(/project/);
+});
+
+test("a model that could never be one is refused while somebody is still looking", async () => {
+  // The failure it saves is the expensive one: an instance that boots on a model
+  // no API knows fails every Attempt of the night on a 404, and the morning finds
+  // a spelling mistake that cost a queue.
+  // Named by whichever way it arrived, and both accepted shapes said back: what is
+  // being refused is nearly always one of them, written the way a person says it.
+  const spoken = await instanceWith({ runner: { model: "Opus 5" } });
+  expect(() => loadSupervisorConfig({ cwd: spoken, env: {} })).toThrow(
+    /runner\.model.*opus.*claude-opus-5/s,
+  );
+
+  const cwd = await instanceWith({});
+  expect(() => loadSupervisorConfig({ cwd, env: { SUPERVISOR_MODEL: "Opus 5" } })).toThrow(
+    /SUPERVISOR_MODEL.*opus.*claude-opus-5/s,
+  );
+
+  // A model called nothing at all is no more a model than a spoken one is.
+  const blank = await instanceWith({ runner: { model: "  " } });
+  expect(() => loadSupervisorConfig({ cwd: blank, env: {} })).toThrow(/runner\.model/);
+});
+
+test("every shape a model is really named by is left alone", async () => {
+  const named = async (model: string): Promise<string | undefined> =>
+    loadSupervisorConfig({ cwd: await instanceWith({ runner: { model } }), env: {} }).runner.model;
+
+  expect(await named("opus")).toBe("opus");
+  expect(await named("claude-opus-5")).toBe("claude-opus-5");
+  expect(await named("anthropic.claude-sonnet-4-5-20250929-v1:0")).toBe(
+    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+  );
+  expect(await named("claude-sonnet-4-5@20250929")).toBe("claude-sonnet-4-5@20250929");
+
+  // A model that does not exist but could have is not this check's to catch: its
+  // first Attempt fails at once, at no cost, in the API's own words.
+  expect(await named("claude-opus-9")).toBe("claude-opus-9");
 });
 
 test("an unknown permission mode says which ones there are", async () => {

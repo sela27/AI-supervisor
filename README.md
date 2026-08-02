@@ -73,6 +73,13 @@ below.
 }
 ```
 
+`runner.model` is whatever Claude Code can be asked for — an alias like `opus`, a full id
+like `claude-opus-5`, or the forms Bedrock and Vertex take. It is not checked against a list
+of real models, since that set is open and changes under the Supervisor; what stops the
+service is a name that could never be one, `"Opus 5"` being the way a person says it out
+loud. A model that simply does not exist is the API's to refuse, at once and for nothing.
+Left out altogether, Claude Code picks its own.
+
 `source` and `project` are what a run would otherwise have to be told every time — with them
 in the file, starting a run needs nothing but the instruction to start. A start request that
 names one of them anyway wins, for that run only.

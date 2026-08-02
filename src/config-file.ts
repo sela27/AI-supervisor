@@ -123,7 +123,7 @@ function parseSettings(path: string, raw: unknown): FileSettings {
   const host = text(path, settings.host, "host");
   const logLevel = text(path, settings.logLevel, "logLevel");
   const attemptBudget = budget(path, settings.attemptBudget);
-  const model = text(path, runner.model, "runner.model");
+  const model = modelId(setting(path, "runner.model"), runner.model);
   const permissionMode = oneOf(
     setting(path, "runner.permissionMode"),
     runner.permissionMode,
@@ -442,6 +442,35 @@ export function oneOf<T extends string>(
     throw new Error(`${where} must be one of ${allowed.join(", ")}, got ${quote(value)}`);
   }
   return found;
+}
+
+/**
+ * How every shape of model id is spelled — an alias, a full id, the forms Bedrock
+ * and Vertex give them. None carries a space, and none opens with punctuation.
+ */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
+
+/**
+ * The model every Run is asked for. There is no list to check it against: the set
+ * of real models is open and changes under the Supervisor, and the only way to
+ * know one is to spend a Run on it. So this refuses what could never name a model
+ * at all — `"Opus 5"`, a model said the way a person says it out loud — and leaves
+ * the rest to the API, whose refusal is immediate, free, and in its own words.
+ *
+ * Worth stopping the service for even so: an instance that boots on a name nothing
+ * can be asked for spends every Attempt of the night finding out.
+ */
+export function modelId(where: string, value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+
+  const written = typeof value === "string" ? value.trim() : "";
+  if (!MODEL_ID.test(written)) {
+    throw new Error(
+      `${where} must be a model Claude Code can be asked for — an alias such as "opus", ` +
+        `or a full id such as "claude-opus-5" — got ${quote(value)}`,
+    );
+  }
+  return written;
 }
 
 function setting(path: string, name: string): string {

@@ -43,6 +43,9 @@ What carries out a Run — the one place the Supervisor launches Claude Code fro
 Which of the two ways an instance drives its Runs: the Agent SDK, or the Claude Code CLI beside it, for a deployment the SDK cannot run in. It is the same Claude Code either way and the same messages come back either way, so it is the only thing that differs between them — the same Runs, the same three outcomes, the same reset time on a limit, the same figures for what a Run spent, the same output read while an Attempt is still in flight. A deployment's answer to what its environment can run, and nobody above the Runner is told which it answered.
 _Avoid_: mode (that is the permission mode), backend, transport
 
+**Model**:
+Which Claude model every Run of an instance is asked for, written the way Claude Code takes one — an alias, a full id, or the form a cloud provider gives it. Which models are real is nothing the Supervisor knows: the set is open and changes under the Supervisor, so an instance is stopped only for a name that could never be a model at all, and a name that merely is not one is refused by the API at once and for nothing. Left unnamed, Claude Code picks its own.
+
 **Attempt**:
 One Run of a ticket. A ticket gets a bounded number of attempts — its **attempt budget**, two by default — and each attempt after the first receives the previous attempt's failure feedback. A budget belongs to a ticket, not to a run: spending one ticket's whole budget costs the next ticket nothing.
 

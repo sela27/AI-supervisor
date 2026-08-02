@@ -1,5 +1,6 @@
 import {
   HIGHEST_PORT,
+  modelId,
   oneOf,
   readConfigFile,
   type FileSettings,
@@ -88,7 +89,7 @@ export function loadSupervisorConfig(options: LoadConfigOptions = {}): Superviso
     options.cwd ?? process.cwd(),
   );
 
-  const model = set(env.SUPERVISOR_MODEL) ?? file.model;
+  const model = modelId("SUPERVISOR_MODEL", set(env.SUPERVISOR_MODEL)) ?? file.model;
 
   return {
     dataDir: set(env.SUPERVISOR_DATA_DIR) ?? file.dataDir ?? DEFAULTS.dataDir,
